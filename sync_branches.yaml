@@ -1,0 +1,13 @@
+# Branch configuration for alice4_develop_ws
+# Format: repo_name: branch_name
+workspace: /home/aeirobot/ROS2/alice4_develop_ws
+
+branches:
+  aeirobot_framework: develop
+  aeirobot_state_estimator: develop
+  aeirobot_toolbox: develop
+  alice_common: develop
+  alice_main: develop
+  alice_parameters: develop
+  alice_simulation: develop
+  alice_action_manager: develop
