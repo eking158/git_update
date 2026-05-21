@@ -1,0 +1,14 @@
+# Branch configuration for alice_mobile_ws
+workspace: /home/aeirobot/ROS2/alice_mobile_ws
+git_base_url: https://github.com/HERoEHS
+
+branches:
+  aeirobot_framework: develop
+  aeirobot_toolbox: feature/m1_poc_hand_rad
+  alice_mobile_common: develop
+  alice_mobile_main: develop
+  alice_mobile_parameters: develop
+  alice_simulation: develop
+  alice_mobile_jetson: develop
+  aeirobot_teleoperation: feature/web_ui
+  ROS-TCP-Endpoint: feature/m1_poc

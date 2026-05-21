@@ -1,31 +1,40 @@
 #!/bin/bash
 
 # ============================================================
-# Repo update script for alice4_develop_ws/src
-# Config is loaded from sync_branches.yaml if present.
-# Fallback: edit the REPO_BRANCH array below.
+# Repo update script — multi-workspace support
+# Runs interactively when no --config / --repo is given.
 #
 # Usage:
-#   ./update_repos.sh
-#   ./update_repos.sh --repo alice_main,alice_common
-#   ./update_repos.sh --config /path/to/custom.yaml
+#   ./update_repos.sh                         # full interactive
+#   ./update_repos.sh --config alice_mobile   # skip workspace picker
+#   ./update_repos.sh --repo alice_main       # skip repo picker
+#   ./update_repos.sh --config alice4_develop --repo alice_main,alice_common
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-GIT_BASE_URL="${GIT_BASE_URL:-https://github.com/HERoEHS}"
+CONFIG_DIR="${SCRIPT_DIR}/config"
+
+# ---- colors ----
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+RESET='\033[0m'
 
 # ---- parse arguments ----
-FILTER=()
-CONFIG_FILE="${SCRIPT_DIR}/config/sync_branches.yaml"
+FILTER_REPOS=()
+FILTER_CONFIGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --repo)
-            IFS=',' read -ra FILTER <<< "$2"
+            IFS=',' read -ra FILTER_REPOS <<< "$2"
             shift 2
             ;;
         --config)
-            CONFIG_FILE="$2"
+            IFS=',' read -ra FILTER_CONFIGS <<< "$2"
             shift 2
             ;;
         *)
@@ -34,238 +43,396 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ---- load config ----
-declare -A REPO_BRANCH
-declare -A REPO_URL
+# ---- scan available yaml files ----
+AVAILABLE_YAMLS=()
+while IFS= read -r -d '' f; do
+    AVAILABLE_YAMLS+=("$f")
+done < <(find "$CONFIG_DIR" -maxdepth 1 -name "*.yaml" -print0 | sort -z)
 
-if [[ -f "$CONFIG_FILE" ]]; then
-    ws=$(grep "^workspace:" "$CONFIG_FILE" | awk '{print $2}')
-    SRC_DIR="${ws:+${ws}/src}"
-    SRC_DIR="${SRC_DIR:-${SCRIPT_DIR}/src}"
+if [ ${#AVAILABLE_YAMLS[@]} -eq 0 ]; then
+    echo -e "${RED}No config files found in ${CONFIG_DIR}${RESET}"
+    exit 1
+fi
 
-    in_branches=false
+# ---- helpers ----
+
+get_workspace() {
+    grep "^workspace:" "$1" | awk '{print $2}'
+}
+
+# Parse "repo branch" pairs from a yaml without touching global state
+parse_repos_from_yaml() {
+    local cfg="$1"
+    local in_branches=false
     while IFS= read -r line; do
         if [[ "$line" =~ ^branches: ]]; then
-            in_branches=true
-            continue
+            in_branches=true; continue
         fi
         if [[ "$in_branches" == true ]]; then
             [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^[[:space:]]*# ]] && continue
-            if [[ "$line" =~ ^[^[:space:]] && ! "$line" =~ ^branches: ]]; then
-                in_branches=false
-                continue
+            if [[ "$line" =~ ^[^[:space:]] ]]; then
+                in_branches=false; continue
             fi
+            local repo branch
+            repo=$(echo "$line" | sed 's/^[[:space:]]*//' | cut -d: -f1 | xargs)
+            branch=$(echo "$line" | cut -d: -f2- | xargs)
+            [[ -n "$repo" && -n "$branch" ]] && echo "$repo $branch"
+        fi
+    done < "$cfg"
+}
+
+# ---- Step 1: config picker ----
+pick_configs() {
+    echo ""
+    echo -e "${BOLD}${CYAN}========================================${RESET}"
+    echo -e "${BOLD}  Step 1 / 2  —  Select config${RESET}"
+    echo -e "${BOLD}${CYAN}========================================${RESET}"
+    echo -e "  ${DIM}(config 선택 시 workspace 경로가 자동으로 결정됩니다)${RESET}"
+    echo ""
+
+    local i=1
+    for yaml in "${AVAILABLE_YAMLS[@]}"; do
+        local name ws
+        name="$(basename "$yaml" .yaml)"
+        ws="$(get_workspace "$yaml")"
+        printf "  ${BOLD}[%d]${RESET} %-28s ${DIM}→ %s${RESET}\n" "$i" "$name" "$ws"
+        (( i++ ))
+    done
+
+    local total=${#AVAILABLE_YAMLS[@]}
+    echo ""
+    echo -e "  ${BOLD}[0]${RESET} All configs"
+    echo ""
+    echo -e "  Enter number(s) [0-${total}], space or comma separated"
+    echo -n "  > "
+
+    local input
+    read -r input
+    input="${input//,/ }"
+
+    CONFIG_FILES=()
+    local selected_all=false
+
+    for token in $input; do
+        if [[ "$token" == "0" ]]; then
+            selected_all=true; break
+        fi
+        if [[ "$token" =~ ^[0-9]+$ ]] && (( token >= 1 && token <= total )); then
+            CONFIG_FILES+=("${AVAILABLE_YAMLS[$((token - 1))]}")
+        else
+            echo -e "  ${YELLOW}Ignoring invalid input: '${token}'${RESET}"
+        fi
+    done
+
+    if [ "$selected_all" = true ] || [ ${#CONFIG_FILES[@]} -eq 0 ]; then
+        CONFIG_FILES=("${AVAILABLE_YAMLS[@]}")
+        [ "$selected_all" = false ] && echo -e "  ${YELLOW}No valid selection — using all configs.${RESET}"
+    fi
+
+    # deduplicate while preserving order
+    local seen=() deduped=()
+    for f in "${CONFIG_FILES[@]}"; do
+        local dup=false
+        for s in "${seen[@]}"; do [ "$s" = "$f" ] && dup=true && break; done
+        [ "$dup" = false ] && deduped+=("$f") && seen+=("$f")
+    done
+    CONFIG_FILES=("${deduped[@]}")
+}
+
+# ---- Step 2: repo picker ----
+# Reads repos from CONFIG_FILES; sets FILTER_REPOS.
+pick_repos() {
+    # Collect all repos from selected configs (ordered, deduplicated)
+    # Parallel arrays: PICK_REPOS, PICK_BRANCHES, PICK_WORKSPACES
+    local -a PICK_REPOS=()
+    local -a PICK_BRANCHES=()
+    local -a PICK_WORKSPACES=()    # space-separated list of ws names per repo
+    declare -A _seen_repo
+
+    for cfg in "${CONFIG_FILES[@]}"; do
+        local wsname; wsname="$(basename "$cfg" .yaml)"
+        while read -r repo branch; do
+            if [[ -z "${_seen_repo[$repo]+x}" ]]; then
+                PICK_REPOS+=("$repo")
+                PICK_BRANCHES+=("$branch")
+                PICK_WORKSPACES+=("$wsname")
+                _seen_repo[$repo]=1
+            else
+                # repo appears in multiple workspaces — append ws name
+                local idx
+                for idx in "${!PICK_REPOS[@]}"; do
+                    if [[ "${PICK_REPOS[$idx]}" == "$repo" ]]; then
+                        PICK_WORKSPACES[$idx]+=" $wsname"
+                        break
+                    fi
+                done
+            fi
+        done < <(parse_repos_from_yaml "$cfg")
+    done
+
+    local total=${#PICK_REPOS[@]}
+    if [ "$total" -eq 0 ]; then
+        echo -e "${YELLOW}No repos found in selected configs.${RESET}"
+        return
+    fi
+
+    local multi_ws=false
+    [ ${#CONFIG_FILES[@]} -gt 1 ] && multi_ws=true
+
+    echo ""
+    echo -e "${BOLD}${CYAN}========================================${RESET}"
+    echo -e "${BOLD}  Step 2 / 2  —  Select repo(s)${RESET}"
+    echo -e "${BOLD}${CYAN}========================================${RESET}"
+    echo ""
+
+    for (( i=0; i<total; i++ )); do
+        local repo="${PICK_REPOS[$i]}"
+        local branch="${PICK_BRANCHES[$i]}"
+        local ws="${PICK_WORKSPACES[$i]}"
+        if [ "$multi_ws" = true ]; then
+            printf "  ${BOLD}[%d]${RESET} %-30s ${DIM}(%s)${RESET}\n" "$((i+1))" "$repo" "$ws"
+        else
+            printf "  ${BOLD}[%d]${RESET} %-30s ${DIM}branch: %s${RESET}\n" "$((i+1))" "$repo" "$branch"
+        fi
+    done
+
+    echo ""
+    echo -e "  ${BOLD}[0]${RESET} All repos"
+    echo ""
+    echo -e "  Enter number(s) [0-${total}], space or comma separated"
+    echo -n "  > "
+
+    local input
+    read -r input
+    input="${input//,/ }"
+
+    FILTER_REPOS=()
+    local selected_all=false
+
+    for token in $input; do
+        if [[ "$token" == "0" ]]; then
+            selected_all=true; break
+        fi
+        if [[ "$token" =~ ^[0-9]+$ ]] && (( token >= 1 && token <= total )); then
+            FILTER_REPOS+=("${PICK_REPOS[$((token - 1))]}")
+        else
+            echo -e "  ${YELLOW}Ignoring invalid input: '${token}'${RESET}"
+        fi
+    done
+
+    if [ "$selected_all" = true ] || [ ${#FILTER_REPOS[@]} -eq 0 ]; then
+        FILTER_REPOS=()   # empty = all
+        [ "$selected_all" = false ] && echo -e "  ${YELLOW}No valid selection — updating all repos.${RESET}"
+    fi
+}
+
+# ---- resolve CONFIG_FILES (Step 1) ----
+CONFIG_FILES=()
+if [ ${#FILTER_CONFIGS[@]} -gt 0 ]; then
+    for name in "${FILTER_CONFIGS[@]}"; do
+        if [[ "$name" == /* ]]; then
+            CONFIG_FILES+=("$name")
+        elif [[ "$name" == *.yaml ]]; then
+            CONFIG_FILES+=("${CONFIG_DIR}/${name}")
+        else
+            CONFIG_FILES+=("${CONFIG_DIR}/${name}.yaml")
+        fi
+    done
+elif [ ${#AVAILABLE_YAMLS[@]} -eq 1 ]; then
+    CONFIG_FILES=("${AVAILABLE_YAMLS[0]}")
+elif [ -t 0 ]; then
+    pick_configs
+else
+    CONFIG_FILES=("${AVAILABLE_YAMLS[@]}")
+fi
+
+# ---- resolve FILTER_REPOS (Step 2) ----
+# Only show repo picker in interactive mode when --repo was not given
+if [ ${#FILTER_REPOS[@]} -eq 0 ] && [ -t 0 ]; then
+    pick_repos
+fi
+
+# ---- global result buckets ----
+ALL_SUCCESS=()
+ALL_CLONED=()
+ALL_FAILED=()
+ALL_SKIPPED=()
+
+# ---- git helpers ----
+
+load_config() {
+    local cfg="$1"
+    SRC_DIR=""
+    GIT_BASE_URL_CFG=""
+    unset REPO_BRANCH; declare -gA REPO_BRANCH
+
+    local ws base
+    ws=$(grep "^workspace:" "$cfg" | awk '{print $2}')
+    base=$(grep "^git_base_url:" "$cfg" | awk '{print $2}')
+    SRC_DIR="${ws:+${ws}/src}"
+    GIT_BASE_URL_CFG="${base:-${GIT_BASE_URL:-https://github.com/HERoEHS}}"
+
+    local in_branches=false
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^branches: ]]; then
+            in_branches=true; continue
+        fi
+        if [[ "$in_branches" == true ]]; then
+            [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^[[:space:]]*# ]] && continue
+            if [[ "$line" =~ ^[^[:space:]] ]]; then
+                in_branches=false; continue
+            fi
+            local repo branch
             repo=$(echo "$line" | sed 's/^[[:space:]]*//' | cut -d: -f1 | xargs)
             branch=$(echo "$line" | cut -d: -f2- | xargs)
             [[ -n "$repo" && -n "$branch" ]] && REPO_BRANCH["$repo"]="$branch"
         fi
-    done < "$CONFIG_FILE"
-else
-    # Fallback: hardcoded defaults (used when no YAML config is found)
-    CONFIG_FILE="(none)"
-    SRC_DIR="${SCRIPT_DIR}/src"
-    REPO_BRANCH=(
-        ["aeirobot_framework"]="develop"
-        ["aeirobot_state_estimator"]="develop"
-        ["aeirobot_toolbox"]="develop"
-        ["alice_action_manager"]="develop"
-        ["alice_common"]="develop"
-        ["alice_main"]="develop"
-        ["alice_parameters"]="develop"
-        ["alice_simulation"]="develop"
-    )
-fi
-
-# ============================================================
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-RESET='\033[0m'
-
-SUCCESS=()
-FAILED=()
-SKIPPED=()
-CLONED=()
-
-print_header() {
-    echo ""
-    echo -e "${BOLD}${CYAN}========================================${RESET}"
-    echo -e "${BOLD}${CYAN}  alice_develop_ws repo updater${RESET}"
-    echo -e "${BOLD}${CYAN}========================================${RESET}"
-    echo -e "  Source dir : ${SRC_DIR}"
-    echo -e "  Clone base : ${GIT_BASE_URL}"
-    echo -e "  Config     : ${CONFIG_FILE}"
-    echo ""
+    done < "$cfg"
 }
 
 get_clone_url() {
-    local repo="$1"
-    if [ -n "${REPO_URL[$repo]}" ]; then
-        echo "${REPO_URL[$repo]}"
-    else
-        echo "${GIT_BASE_URL%/}/${repo}.git"
-    fi
+    echo "${GIT_BASE_URL_CFG%/}/${1}.git"
 }
 
 clone_repo() {
-    local repo="$1"
-    local target_branch="$2"
+    local repo="$1" target_branch="$2"
     local repo_path="${SRC_DIR}/${repo}"
-    local clone_url
-    clone_url="$(get_clone_url "${repo}")"
+    local clone_url; clone_url="$(get_clone_url "$repo")"
 
-    if [ -e "${repo_path}" ] && [ ! -d "${repo_path}" ]; then
+    if [ -e "$repo_path" ] && [ ! -d "$repo_path" ]; then
         echo -e "  ${RED}ERROR: path exists and is not a directory.${RESET}"
-        FAILED+=("${repo}")
-        return 1
+        ALL_FAILED+=("${repo}"); return 1
+    fi
+    if [ -d "$repo_path" ] && [ -n "$(find "$repo_path" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+        echo -e "  ${RED}ERROR: directory exists but is not a git repo.${RESET}"
+        ALL_FAILED+=("${repo}"); return 1
     fi
 
-    if [ -d "${repo_path}" ] && [ -n "$(find "${repo_path}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-        echo -e "  ${RED}ERROR: directory exists but is not a git repository.${RESET}"
-        FAILED+=("${repo}")
-        return 1
-    fi
-
-    echo -e "  ${YELLOW}Repository not found, cloning...${RESET}"
+    echo -e "  ${YELLOW}Not found locally, cloning...${RESET}"
     echo -e "  Clone URL: ${CYAN}${clone_url}${RESET}"
 
-    local clone_output
-    clone_output=$(git clone --branch "${target_branch}" --single-branch "${clone_url}" "${repo_path}" 2>&1)
-    local clone_status=$?
-    echo "${clone_output}" | tail -1
+    local out; out=$(git clone --branch "$target_branch" --single-branch "$clone_url" "$repo_path" 2>&1)
+    local status=$?
+    echo "$out" | tail -1
 
-    if [ ${clone_status} -ne 0 ]; then
+    if [ $status -ne 0 ]; then
         echo -e "  ${RED}ERROR: clone failed.${RESET}"
-        FAILED+=("${repo}")
-        return 1
+        ALL_FAILED+=("${repo}"); return 1
     fi
 
-    echo -e "  ${GREEN}Cloned and checked out '${target_branch}'${RESET}"
-    CLONED+=("${repo}")
-    SUCCESS+=("${repo}")
-    return 0
+    echo -e "  ${GREEN}Cloned → '${target_branch}'${RESET}"
+    ALL_CLONED+=("${repo}"); ALL_SUCCESS+=("${repo}")
 }
 
 update_repo() {
-    local repo="$1"
-    local target_branch="$2"
+    local repo="$1" target_branch="$2"
     local repo_path="${SRC_DIR}/${repo}"
 
-    echo -e "${BOLD}[ ${repo} ]${RESET} → branch: ${CYAN}${target_branch}${RESET}"
+    echo -e "${BOLD}[ ${repo} ]${RESET} → ${CYAN}${target_branch}${RESET}"
 
     if [ ! -d "${repo_path}/.git" ]; then
-        clone_repo "${repo}" "${target_branch}"
-        return
+        clone_repo "$repo" "$target_branch"; return
     fi
 
-    # stash uncommitted changes
     local stashed=false
-    if ! git -C "${repo_path}" diff --quiet || ! git -C "${repo_path}" diff --cached --quiet; then
+    if ! git -C "$repo_path" diff --quiet || ! git -C "$repo_path" diff --cached --quiet; then
         echo -e "  ${YELLOW}Uncommitted changes detected, stashing...${RESET}"
-        git -C "${repo_path}" stash push -m "auto-stash by update_repos.sh" --include-untracked > /dev/null 2>&1
+        git -C "$repo_path" stash push -m "auto-stash by update_repos.sh" --include-untracked > /dev/null 2>&1
         stashed=true
     fi
 
-    # fetch
     echo -n "  Fetching... "
-    local fetch_output
-    fetch_output=$(git -C "${repo_path}" fetch --prune origin 2>&1)
+    local fetch_out; fetch_out=$(git -C "$repo_path" fetch --prune origin 2>&1)
     local fetch_status=$?
-    echo "${fetch_output}" | tail -1
-    if [ ${fetch_status} -ne 0 ]; then
+    echo "$fetch_out" | tail -1
+    if [ $fetch_status -ne 0 ]; then
         echo -e "  ${RED}ERROR: fetch failed.${RESET}"
-        [ "$stashed" = true ] && git -C "${repo_path}" stash pop > /dev/null 2>&1
-        FAILED+=("${repo}")
-        return
+        [ "$stashed" = true ] && git -C "$repo_path" stash pop > /dev/null 2>&1
+        ALL_FAILED+=("${repo}"); return
     fi
 
-    # check if target branch exists on remote
-    if ! git -C "${repo_path}" ls-remote --exit-code --heads origin "${target_branch}" > /dev/null 2>&1; then
+    if ! git -C "$repo_path" ls-remote --exit-code --heads origin "$target_branch" > /dev/null 2>&1; then
         echo -e "  ${RED}ERROR: branch '${target_branch}' not found on remote.${RESET}"
-        [ "$stashed" = true ] && git -C "${repo_path}" stash pop > /dev/null 2>&1
-        FAILED+=("${repo}")
-        return
+        [ "$stashed" = true ] && git -C "$repo_path" stash pop > /dev/null 2>&1
+        ALL_FAILED+=("${repo}"); return
     fi
 
-    # checkout target branch
-    local current_branch
-    current_branch=$(git -C "${repo_path}" branch --show-current)
-    if [ "${current_branch}" != "${target_branch}" ]; then
+    local current_branch; current_branch=$(git -C "$repo_path" branch --show-current)
+    if [ "$current_branch" != "$target_branch" ]; then
         echo -n "  Switching ${current_branch} → ${target_branch}... "
-        if ! git -C "${repo_path}" checkout "${target_branch}" 2>&1; then
+        if ! git -C "$repo_path" checkout "$target_branch" 2>&1; then
             echo -e "  ${RED}ERROR: checkout failed.${RESET}"
-            [ "$stashed" = true ] && git -C "${repo_path}" stash pop > /dev/null 2>&1
-            FAILED+=("${repo}")
-            return
+            [ "$stashed" = true ] && git -C "$repo_path" stash pop > /dev/null 2>&1
+            ALL_FAILED+=("${repo}"); return
         fi
     fi
 
-    # pull
     echo -n "  Pulling... "
-    local pull_output
-    pull_output=$(git -C "${repo_path}" pull origin "${target_branch}" 2>&1)
+    local pull_out; pull_out=$(git -C "$repo_path" pull origin "$target_branch" 2>&1)
     local pull_status=$?
-    echo "${pull_output}" | tail -1
-
+    echo "$pull_out" | tail -1
     if [ $pull_status -ne 0 ]; then
         echo -e "  ${RED}ERROR: pull failed.${RESET}"
-        [ "$stashed" = true ] && git -C "${repo_path}" stash pop > /dev/null 2>&1
-        FAILED+=("${repo}")
-        return
+        [ "$stashed" = true ] && git -C "$repo_path" stash pop > /dev/null 2>&1
+        ALL_FAILED+=("${repo}"); return
     fi
 
-    # restore stash
     if [ "$stashed" = true ]; then
         echo -n "  Restoring stash... "
-        if git -C "${repo_path}" stash pop > /dev/null 2>&1; then
+        if git -C "$repo_path" stash pop > /dev/null 2>&1; then
             echo -e "${GREEN}done${RESET}"
         else
-            echo -e "${YELLOW}stash pop had conflicts — resolve manually${RESET}"
+            echo -e "${YELLOW}conflicts — resolve manually${RESET}"
         fi
     fi
 
     echo -e "  ${GREEN}OK${RESET}"
-    SUCCESS+=("${repo}")
+    ALL_SUCCESS+=("${repo}")
+}
+
+print_workspace_header() {
+    local cfg="$1" src="$2" base="$3"
+    echo ""
+    echo -e "${BOLD}${CYAN}========================================${RESET}"
+    echo -e "${BOLD}${CYAN}  $(basename "$cfg" .yaml)${RESET}"
+    echo -e "${BOLD}${CYAN}========================================${RESET}"
+    echo -e "  Source dir : ${src}"
+    echo -e "  Git base   : ${base}"
+    echo ""
 }
 
 print_summary() {
     echo ""
-    echo -e "${BOLD}${CYAN}========================================${RESET}"
-    echo -e "${BOLD}  Summary${RESET}"
-    echo -e "${BOLD}${CYAN}========================================${RESET}"
-
-    if [ ${#SUCCESS[@]} -gt 0 ]; then
-        echo -e "${GREEN}  SUCCESS (${#SUCCESS[@]}): ${SUCCESS[*]}${RESET}"
-    fi
-    if [ ${#CLONED[@]} -gt 0 ]; then
-        echo -e "${CYAN}  CLONED  (${#CLONED[@]}): ${CLONED[*]}${RESET}"
-    fi
-    if [ ${#FAILED[@]} -gt 0 ]; then
-        echo -e "${RED}  FAILED  (${#FAILED[@]}): ${FAILED[*]}${RESET}"
-    fi
-    if [ ${#SKIPPED[@]} -gt 0 ]; then
-        echo -e "${YELLOW}  SKIPPED (${#SKIPPED[@]}): ${SKIPPED[*]}${RESET}"
-    fi
+    echo -e "${BOLD}${CYAN}========================================"
+    echo -e "  Overall Summary"
+    echo -e "========================================${RESET}"
+    [ ${#ALL_SUCCESS[@]} -gt 0 ] && echo -e "${GREEN}  SUCCESS (${#ALL_SUCCESS[@]}): ${ALL_SUCCESS[*]}${RESET}"
+    [ ${#ALL_CLONED[@]}  -gt 0 ] && echo -e "${CYAN}  CLONED  (${#ALL_CLONED[@]}):  ${ALL_CLONED[*]}${RESET}"
+    [ ${#ALL_FAILED[@]}  -gt 0 ] && echo -e "${RED}  FAILED  (${#ALL_FAILED[@]}):  ${ALL_FAILED[*]}${RESET}"
+    [ ${#ALL_SKIPPED[@]} -gt 0 ] && echo -e "${YELLOW}  SKIPPED (${#ALL_SKIPPED[@]}): ${ALL_SKIPPED[*]}${RESET}"
     echo ""
 }
 
 # ---- main ----
 
-print_header
-
-for repo in "${!REPO_BRANCH[@]}"; do
-    if [ ${#FILTER[@]} -gt 0 ]; then
-        match=false
-        for f in "${FILTER[@]}"; do
-            [ "$f" = "$repo" ] && match=true && break
-        done
-        [ "$match" = false ] && continue
+for cfg in "${CONFIG_FILES[@]}"; do
+    if [ ! -f "$cfg" ]; then
+        echo -e "${RED}Config not found: ${cfg}${RESET}"
+        continue
     fi
-    update_repo "${repo}" "${REPO_BRANCH[$repo]}"
-    echo ""
+
+    load_config "$cfg"
+    print_workspace_header "$cfg" "$SRC_DIR" "$GIT_BASE_URL_CFG"
+
+    for repo in "${!REPO_BRANCH[@]}"; do
+        if [ ${#FILTER_REPOS[@]} -gt 0 ]; then
+            match=false
+            for f in "${FILTER_REPOS[@]}"; do [ "$f" = "$repo" ] && match=true && break; done
+            [ "$match" = false ] && continue
+        fi
+        update_repo "$repo" "${REPO_BRANCH[$repo]}"
+        echo ""
+    done
 done
 
 print_summary
