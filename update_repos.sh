@@ -2,28 +2,79 @@
 
 # ============================================================
 # Repo update script for alice4_develop_ws/src
-# 각 repo별 업데이트할 브랜치와 clone URL을 아래에서 설정하세요.
+# Config is loaded from sync_branches.yaml if present.
+# Fallback: edit the REPO_BRANCH array below.
+#
+# Usage:
+#   ./update_repos.sh
+#   ./update_repos.sh --repo alice_main,alice_common
+#   ./update_repos.sh --config /path/to/custom.yaml
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="${SCRIPT_DIR}/src"
 GIT_BASE_URL="${GIT_BASE_URL:-https://github.com/HERoEHS}"
 
-declare -A REPO_BRANCH=(
-    ["aeirobot_framework"]="develop"
-    ["aeirobot_state_estimator"]="develop"
-    ["aeirobot_toolbox"]="develop"
-    ["alice_action_manager"]="develop"
-    ["alice_common"]="develop"
-    ["alice_main"]="develop"
-    ["alice_parameters"]="develop"
-    ["alice_simulation"]="develop"
-)
+# ---- parse arguments ----
+FILTER=()
+CONFIG_FILE="${SCRIPT_DIR}/config/sync_branches.yaml"
 
-# Optional per-repo clone URL override. If unset, uses:
-#   ${GIT_BASE_URL}/${repo}.git
-declare -A REPO_URL=(
-)
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --repo)
+            IFS=',' read -ra FILTER <<< "$2"
+            shift 2
+            ;;
+        --config)
+            CONFIG_FILE="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+# ---- load config ----
+declare -A REPO_BRANCH
+declare -A REPO_URL
+
+if [[ -f "$CONFIG_FILE" ]]; then
+    ws=$(grep "^workspace:" "$CONFIG_FILE" | awk '{print $2}')
+    SRC_DIR="${ws:+${ws}/src}"
+    SRC_DIR="${SRC_DIR:-${SCRIPT_DIR}/src}"
+
+    in_branches=false
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^branches: ]]; then
+            in_branches=true
+            continue
+        fi
+        if [[ "$in_branches" == true ]]; then
+            [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^[[:space:]]*# ]] && continue
+            if [[ "$line" =~ ^[^[:space:]] && ! "$line" =~ ^branches: ]]; then
+                in_branches=false
+                continue
+            fi
+            repo=$(echo "$line" | sed 's/^[[:space:]]*//' | cut -d: -f1 | xargs)
+            branch=$(echo "$line" | cut -d: -f2- | xargs)
+            [[ -n "$repo" && -n "$branch" ]] && REPO_BRANCH["$repo"]="$branch"
+        fi
+    done < "$CONFIG_FILE"
+else
+    # Fallback: hardcoded defaults (used when no YAML config is found)
+    CONFIG_FILE="(none)"
+    SRC_DIR="${SCRIPT_DIR}/src"
+    REPO_BRANCH=(
+        ["aeirobot_framework"]="develop"
+        ["aeirobot_state_estimator"]="develop"
+        ["aeirobot_toolbox"]="develop"
+        ["alice_action_manager"]="develop"
+        ["alice_common"]="develop"
+        ["alice_main"]="develop"
+        ["alice_parameters"]="develop"
+        ["alice_simulation"]="develop"
+    )
+fi
 
 # ============================================================
 
@@ -44,14 +95,14 @@ print_header() {
     echo -e "${BOLD}${CYAN}========================================${RESET}"
     echo -e "${BOLD}${CYAN}  alice_develop_ws repo updater${RESET}"
     echo -e "${BOLD}${CYAN}========================================${RESET}"
-    echo -e "  Source dir: ${SRC_DIR}"
-    echo -e "  Clone base: ${GIT_BASE_URL}"
+    echo -e "  Source dir : ${SRC_DIR}"
+    echo -e "  Clone base : ${GIT_BASE_URL}"
+    echo -e "  Config     : ${CONFIG_FILE}"
     echo ""
 }
 
 get_clone_url() {
     local repo="$1"
-
     if [ -n "${REPO_URL[$repo]}" ]; then
         echo "${REPO_URL[$repo]}"
     else
@@ -204,12 +255,6 @@ print_summary() {
 # ---- main ----
 
 print_header
-
-# parse optional --repo filter: ./update_repos.sh --repo alice_main,alice_common
-FILTER=()
-if [[ "$1" == "--repo" && -n "$2" ]]; then
-    IFS=',' read -ra FILTER <<< "$2"
-fi
 
 for repo in "${!REPO_BRANCH[@]}"; do
     if [ ${#FILTER[@]} -gt 0 ]; then
