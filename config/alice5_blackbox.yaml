@@ -3,7 +3,7 @@ git_base_url: https://github.com/HERoEHS
 
 branches:
   aeirobot_thirdparty: develop
-  aeirobot_framework: develop
+  aeirobot_framework: featur/rust
   aeirobot_state_estimator: develop
   aeirobot_toolbox: develop
   alice_action_manager: develop
@@ -14,4 +14,4 @@ branches:
   alice_mpc: develop
   alice_rl_inference: develop
   aeirobot_blackbox: develop
-  aeirobot_debug_tools: feature/move_blackbox
+  #aeirobot_debug_tools: feature/move_blackbox

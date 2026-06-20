@@ -56,6 +56,12 @@ workspace 경로 직접 지정:
 ./update_repos.sh --workspace /home/aeirobot/ROS2/alice_mobile_ws --config alice_mobile_develop --repo alice_mobile_main,alice_mobile_parameters
 ```
 
+`develop` sync 방식을 미리 지정:
+
+```bash
+./update_repos.sh --develop-sync-mode merge --config blackbox
+```
+
 ## Config 형식
 
 ### 1. 단일 Git Base URL 사용
@@ -161,9 +167,13 @@ repo별로 사용할 수 있는 키는 아래와 같습니다.
 2. uncommitted 또는 untracked 변경 사항이 있으면 skip
 3. repo가 있고 깨끗한 상태라면
    - `git fetch --prune origin`
-   - 원격에 대상 branch가 있는지 확인
-   - 필요하면 해당 branch로 checkout
-   - `git pull origin <branch>`
+   - 원격에 pull 대상 branch가 있는지 확인
+   - 현재 branch가 다르면 기본적으로 대상 branch로 전환
+   - 로컬에 대상 branch가 없으면 원격 branch를 fetch한 뒤 local branch 생성 후 전환
+   - 단, YAML의 branch가 `develop`이고 현재 branch가 다르면 현재 branch 위로 최신 `develop`을 가져옴
+   - 이때 사용자는 `merge`, `rebase`, `skip` 중 하나를 선택할 수 있음
+   - 비대화형 실행에서는 `--develop-sync-mode merge|rebase|skip`로 미리 지정 가능
+   - 일반 branch 업데이트는 `git pull origin <branch>`를 사용
 
 repo별 custom clone URL이 설정되어 있으면 fetch 전에 `origin` URL도 같이 맞춰줍니다.
 

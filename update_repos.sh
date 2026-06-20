@@ -9,6 +9,7 @@
 #   ./update_repos.sh --workspace /home/aeirobot/ROS2/blackbox_ws
 #   ROS_WS=/home/aeirobot/ROS2/blackbox_ws ./update_repos.sh --config blackbox
 #   ./update_repos.sh --workspace /home/aeirobot/ROS2/alice4_develop_ws --config alice4_develop --repo alice_main,alice_common
+#   ./update_repos.sh --develop-sync-mode merge --config blackbox
 #
 # Config example:
 #   file_path: /home/aeirobot/ROS2/custom_src
@@ -46,6 +47,8 @@ FALLBACK_WORKSPACE_ROOT=""
 FALLBACK_SRC_DIR=""
 FALLBACK_WORKSPACE_SOURCE=""
 CONFIG_FILE_PATH=""
+DEVELOP_SYNC_MODE=""
+SELECTED_DEVELOP_SYNC_MODE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -59,6 +62,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --workspace)
             WORKSPACE_INPUT="$2"
+            shift 2
+            ;;
+        --develop-sync-mode)
+            DEVELOP_SYNC_MODE="$2"
             shift 2
             ;;
         *)
@@ -636,6 +643,149 @@ ensure_origin_url() {
     echo -e "${GREEN}OK${RESET}"
 }
 
+choose_develop_sync_mode() {
+    local repo="$1"
+    local current_branch="$2"
+
+    if [[ -n "$DEVELOP_SYNC_MODE" ]]; then
+        case "$DEVELOP_SYNC_MODE" in
+            merge|rebase|skip)
+                SELECTED_DEVELOP_SYNC_MODE="$DEVELOP_SYNC_MODE"
+                return 0
+                ;;
+            *)
+                echo -e "  ${RED}ERROR: invalid --develop-sync-mode '${DEVELOP_SYNC_MODE}'. Use merge, rebase, or skip.${RESET}"
+                ALL_FAILED+=("${repo}")
+                return 1
+                ;;
+        esac
+    fi
+
+    if [ ! -t 0 ]; then
+        echo -e "  ${YELLOW}Target branch is 'develop' while current branch is '${current_branch}'.${RESET}"
+        echo -e "  ${YELLOW}Non-interactive mode requires --develop-sync-mode merge|rebase|skip. Skipping.${RESET}"
+        SELECTED_DEVELOP_SYNC_MODE="skip"
+        return 0
+    fi
+
+    echo -e "  ${YELLOW}Target branch is 'develop' while current branch is '${current_branch}'.${RESET}"
+    echo -e "  Choose how to bring latest develop into the current branch:"
+    echo -e "    ${BOLD}[1]${RESET} merge ${DIM}(recommended)${RESET}"
+    echo -e "    ${BOLD}[2]${RESET} rebase"
+    echo -e "    ${BOLD}[0]${RESET} skip"
+    echo -n "  > "
+
+    local input=""
+    read -r input
+
+    case "$input" in
+        1|merge|MERGE|Merge)
+            SELECTED_DEVELOP_SYNC_MODE="merge"
+            ;;
+        2|rebase|REBASE|Rebase)
+            SELECTED_DEVELOP_SYNC_MODE="rebase"
+            ;;
+        0|skip|SKIP|Skip|"")
+            SELECTED_DEVELOP_SYNC_MODE="skip"
+            ;;
+        *)
+            echo -e "  ${YELLOW}Unknown selection '${input}', skipping.${RESET}"
+            SELECTED_DEVELOP_SYNC_MODE="skip"
+            ;;
+    esac
+}
+
+sync_current_branch_with_develop() {
+    local repo="$1"
+    local repo_path="$2"
+    local current_branch="$3"
+    local mode="$4"
+
+    if [[ "$mode" == "skip" ]]; then
+        echo -e "  ${YELLOW}SKIP: develop sync was skipped by user selection.${RESET}"
+        ALL_SKIPPED+=("${repo}")
+        return 2
+    fi
+
+    echo -n "  Fetching develop ref... "
+    local out status=0
+    out=$(git -C "$repo_path" fetch origin develop 2>&1) || status=$?
+    if [[ $status -ne 0 ]]; then
+        echo "${out}" | tail -1
+        echo -e "  ${RED}ERROR: failed to fetch develop.${RESET}"
+        ALL_FAILED+=("${repo}")
+        return 1
+    fi
+    echo -e "${GREEN}OK${RESET}"
+
+    case "$mode" in
+        merge)
+            echo -n "  Merging develop into ${current_branch}... "
+            out=$(git -C "$repo_path" merge --no-edit FETCH_HEAD 2>&1) || status=$?
+            ;;
+        rebase)
+            echo -n "  Rebasing ${current_branch} onto develop... "
+            out=$(git -C "$repo_path" rebase FETCH_HEAD 2>&1) || status=$?
+            ;;
+        *)
+            echo -e "  ${RED}ERROR: unsupported develop sync mode '${mode}'.${RESET}"
+            ALL_FAILED+=("${repo}")
+            return 1
+            ;;
+    esac
+
+    if [[ $status -ne 0 ]]; then
+        echo "${out}" | tail -1
+        echo -e "  ${RED}ERROR: ${mode} failed. Resolve conflicts manually if needed.${RESET}"
+        ALL_FAILED+=("${repo}")
+        return 1
+    fi
+
+    echo "$out" | tail -1
+    echo -e "  ${GREEN}OK${RESET}"
+    return 0
+}
+
+switch_to_target_branch() {
+    local repo="$1"
+    local repo_path="$2"
+    local target_branch="$3"
+    local current_branch="$4"
+    local label="$current_branch"
+
+    if [[ -z "$label" ]]; then
+        label="detached HEAD"
+    fi
+
+    echo -n "  Switching ${label} → ${target_branch}... "
+
+    local out status=0
+    if git -C "$repo_path" show-ref --verify --quiet "refs/heads/$target_branch"; then
+        out=$(git -C "$repo_path" checkout "$target_branch" 2>&1) || status=$?
+    else
+        echo -n "  Fetching target branch ref... "
+        out=$(git -C "$repo_path" fetch origin "$target_branch" 2>&1) || status=$?
+        if [[ $status -ne 0 ]]; then
+            echo "${out}" | tail -1
+            echo -e "  ${RED}ERROR: failed to fetch target branch ref.${RESET}"
+            ALL_FAILED+=("${repo}")
+            return 1
+        fi
+        echo -e "${GREEN}OK${RESET}"
+
+        out=$(git -C "$repo_path" checkout -b "$target_branch" FETCH_HEAD 2>&1) || status=$?
+    fi
+
+    if [[ $status -ne 0 ]]; then
+        echo "${out}" | tail -1
+        echo -e "  ${RED}ERROR: checkout failed.${RESET}"
+        ALL_FAILED+=("${repo}")
+        return 1
+    fi
+
+    echo -e "${GREEN}OK${RESET}"
+}
+
 repo_has_local_changes() {
     local repo_path="$1"
     [ -n "$(git -C "$repo_path" status --porcelain --untracked-files=normal 2>/dev/null)" ]
@@ -700,18 +850,39 @@ update_repo() {
         ALL_FAILED+=("${repo}"); return
     fi
 
+    local current_branch; current_branch=$(git -C "$repo_path" branch --show-current)
+    if [ "$current_branch" != "$target_branch" ]; then
+        if [[ "$target_branch" == "develop" && -n "$current_branch" ]]; then
+            if ! choose_develop_sync_mode "$repo" "$current_branch"; then
+                return
+            fi
+
+            sync_current_branch_with_develop "$repo" "$repo_path" "$current_branch" "$SELECTED_DEVELOP_SYNC_MODE"
+            local develop_sync_status=$?
+            if [[ $develop_sync_status -eq 2 ]]; then
+                return
+            fi
+            if [[ $develop_sync_status -ne 0 ]]; then
+                return
+            fi
+
+            ALL_SUCCESS+=("${repo}")
+            return
+        else
+            if ! git -C "$repo_path" ls-remote --exit-code --heads origin "$target_branch" > /dev/null 2>&1; then
+                echo -e "  ${RED}ERROR: branch '${target_branch}' not found on remote.${RESET}"
+                ALL_FAILED+=("${repo}"); return
+            fi
+
+            if ! switch_to_target_branch "$repo" "$repo_path" "$target_branch" "$current_branch"; then
+                return
+            fi
+        fi
+    fi
+
     if ! git -C "$repo_path" ls-remote --exit-code --heads origin "$target_branch" > /dev/null 2>&1; then
         echo -e "  ${RED}ERROR: branch '${target_branch}' not found on remote.${RESET}"
         ALL_FAILED+=("${repo}"); return
-    fi
-
-    local current_branch; current_branch=$(git -C "$repo_path" branch --show-current)
-    if [ "$current_branch" != "$target_branch" ]; then
-        echo -n "  Switching ${current_branch} → ${target_branch}... "
-        if ! git -C "$repo_path" checkout "$target_branch" 2>&1; then
-            echo -e "  ${RED}ERROR: checkout failed.${RESET}"
-            ALL_FAILED+=("${repo}"); return
-        fi
     fi
 
     echo -n "  Pulling... "
