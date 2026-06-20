@@ -9,6 +9,15 @@
 #   ./update_repos.sh --workspace /home/aeirobot/ROS2/blackbox_ws
 #   ROS_WS=/home/aeirobot/ROS2/blackbox_ws ./update_repos.sh --config blackbox
 #   ./update_repos.sh --workspace /home/aeirobot/ROS2/alice4_develop_ws --config alice4_develop --repo alice_main,alice_common
+#
+# Config example:
+#   git_base_url: https://github.com/HERoEHS
+#   branches:
+#     alice_main: develop
+#     alice_parameters: main
+#   git_base_url: https://github.com/eking
+#   branches:
+#     profile_settings: develop
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -30,6 +39,8 @@ WORKSPACE_INPUT=""
 WORKSPACE_ROOT=""
 SRC_DIR=""
 WORKSPACE_SOURCE=""
+DEFAULT_GIT_BASE_URL="${GIT_BASE_URL:-https://github.com/HERoEHS}"
+GIT_BASE_SUMMARY=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -64,25 +75,147 @@ fi
 
 # ---- helpers ----
 
+build_clone_url_from_base() {
+    local base="$1"
+    local repo="$2"
+    echo "${base%/}/${repo}.git"
+}
+
+get_git_base_summary() {
+    local cfg="$1"
+    local -a bases=()
+    local -a unique_bases=()
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        local trimmed base seen=false
+        trimmed=$(echo "$line" | sed 's/^[[:space:]]*//')
+        [[ -z "$trimmed" || "$trimmed" =~ ^# ]] && continue
+
+        if [[ "$trimmed" =~ ^git_base_url: ]]; then
+            base=$(echo "$trimmed" | cut -d: -f2- | xargs)
+            [[ -z "$base" ]] && continue
+            for existing in "${unique_bases[@]}"; do
+                if [[ "$existing" == "$base" ]]; then
+                    seen=true
+                    break
+                fi
+            done
+            if [[ "$seen" == false ]]; then
+                unique_bases+=("$base")
+            fi
+        fi
+    done < "$cfg"
+
+    if (( ${#unique_bases[@]} == 0 )); then
+        echo "$DEFAULT_GIT_BASE_URL"
+    elif (( ${#unique_bases[@]} == 1 )); then
+        echo "${unique_bases[0]}"
+    else
+        echo "mixed (per section/repo)"
+    fi
+}
+
+# Parse repo entries from yaml.
+# Output: <repo>\t<branch>\t<clone_url_override>
+parse_repo_entries_from_yaml() {
+    local cfg="$1"
+    local in_branches=false
+    local current_section_git_base_url=""
+    local current_repo=""
+    local current_branch=""
+    local current_clone_url=""
+    local current_repo_git_base_url=""
+
+    flush_current_repo_entry() {
+        local effective_clone_url="$current_clone_url"
+        local effective_git_base_url="$current_repo_git_base_url"
+
+        if [[ -z "$effective_git_base_url" ]]; then
+            effective_git_base_url="$current_section_git_base_url"
+        fi
+
+        if [[ -z "$effective_clone_url" && -n "$effective_git_base_url" ]]; then
+            effective_clone_url="$(build_clone_url_from_base "$effective_git_base_url" "$current_repo")"
+        fi
+        if [[ -n "$current_repo" && -n "$current_branch" ]]; then
+            printf "%s\t%s\t%s\n" "$current_repo" "$current_branch" "$effective_clone_url"
+        fi
+        current_repo=""
+        current_branch=""
+        current_clone_url=""
+        current_repo_git_base_url=""
+    }
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        local trimmed indent key value
+
+        trimmed=$(echo "$line" | sed 's/^[[:space:]]*//')
+        indent=$(( ${#line} - ${#trimmed} ))
+
+        [[ -z "$trimmed" || "$trimmed" =~ ^# ]] && continue
+
+        if (( indent == 0 )); then
+            if [[ "$trimmed" =~ ^git_base_url: ]]; then
+                flush_current_repo_entry
+                current_section_git_base_url=$(echo "$trimmed" | cut -d: -f2- | xargs)
+                in_branches=false
+                continue
+            fi
+
+            if [[ "$trimmed" =~ ^branches: ]]; then
+                flush_current_repo_entry
+                in_branches=true
+                continue
+            fi
+
+            flush_current_repo_entry
+            in_branches=false
+            continue
+        fi
+
+        if [[ "$in_branches" != true ]]; then
+            continue
+        fi
+
+        if (( indent == 2 )); then
+            flush_current_repo_entry
+
+            current_repo=$(echo "$trimmed" | cut -d: -f1 | xargs)
+            value=$(echo "$trimmed" | cut -d: -f2- | xargs)
+
+            if [[ -n "$value" ]]; then
+                current_branch="$value"
+                flush_current_repo_entry
+            fi
+            continue
+        fi
+
+        if (( indent >= 4 )) && [[ -n "$current_repo" ]]; then
+            key=$(echo "$trimmed" | cut -d: -f1 | xargs)
+            value=$(echo "$trimmed" | cut -d: -f2- | xargs)
+            case "$key" in
+                branch)
+                    current_branch="$value"
+                    ;;
+                git_url|clone_url|url)
+                    current_clone_url="$value"
+                    ;;
+                git_base_url)
+                    current_repo_git_base_url="$value"
+                    ;;
+            esac
+        fi
+    done < "$cfg"
+
+    flush_current_repo_entry
+}
+
 # Parse "repo branch" pairs from a yaml without touching global state
 parse_repos_from_yaml() {
     local cfg="$1"
-    local in_branches=false
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        if [[ "$line" =~ ^branches: ]]; then
-            in_branches=true; continue
-        fi
-        if [[ "$in_branches" == true ]]; then
-            [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^[[:space:]]*# ]] && continue
-            if [[ "$line" =~ ^[^[:space:]] ]]; then
-                in_branches=false; continue
-            fi
-            local repo branch
-            repo=$(echo "$line" | sed 's/^[[:space:]]*//' | cut -d: -f1 | xargs)
-            branch=$(echo "$line" | cut -d: -f2- | xargs)
-            [[ -n "$repo" && -n "$branch" ]] && echo "$repo $branch"
-        fi
-    done < "$cfg"
+    while IFS=$'\t' read -r repo branch _clone_url; do
+        [[ -n "$repo" && -n "$branch" ]] && printf "%s %s\n" "$repo" "$branch"
+    done < <(parse_repo_entries_from_yaml "$cfg")
 }
 
 # Resolve workspace root and src directory once per run.
@@ -333,33 +466,62 @@ ALL_SKIPPED=()
 
 load_config() {
     local cfg="$1"
-    GIT_BASE_URL_CFG=""
+    GIT_BASE_URL_CFG="$DEFAULT_GIT_BASE_URL"
+    GIT_BASE_SUMMARY="$(get_git_base_summary "$cfg")"
     unset REPO_BRANCH; declare -gA REPO_BRANCH
+    unset REPO_CLONE_URL; declare -gA REPO_CLONE_URL
 
-    local base
-    base=$(grep "^git_base_url:" "$cfg" | awk '{print $2}')
-    GIT_BASE_URL_CFG="${base:-${GIT_BASE_URL:-https://github.com/HERoEHS}}"
-
-    local in_branches=false
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        if [[ "$line" =~ ^branches: ]]; then
-            in_branches=true; continue
+    local repo branch clone_url
+    while IFS=$'\t' read -r repo branch clone_url; do
+        [[ -z "$repo" || -z "$branch" ]] && continue
+        REPO_BRANCH["$repo"]="$branch"
+        if [[ -n "$clone_url" ]]; then
+            REPO_CLONE_URL["$repo"]="$clone_url"
         fi
-        if [[ "$in_branches" == true ]]; then
-            [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^[[:space:]]*# ]] && continue
-            if [[ "$line" =~ ^[^[:space:]] ]]; then
-                in_branches=false; continue
-            fi
-            local repo branch
-            repo=$(echo "$line" | sed 's/^[[:space:]]*//' | cut -d: -f1 | xargs)
-            branch=$(echo "$line" | cut -d: -f2- | xargs)
-            [[ -n "$repo" && -n "$branch" ]] && REPO_BRANCH["$repo"]="$branch"
-        fi
-    done < "$cfg"
+    done < <(parse_repo_entries_from_yaml "$cfg")
 }
 
 get_clone_url() {
-    echo "${GIT_BASE_URL_CFG%/}/${1}.git"
+    local repo="$1"
+    if [[ -n "${REPO_CLONE_URL[$repo]}" ]]; then
+        echo "${REPO_CLONE_URL[$repo]}"
+        return 0
+    fi
+    build_clone_url_from_base "$GIT_BASE_URL_CFG" "$repo"
+}
+
+ensure_origin_url() {
+    local repo="$1"
+    local repo_path="$2"
+    local desired_clone_url="${REPO_CLONE_URL[$repo]}"
+
+    if [[ -z "$desired_clone_url" ]]; then
+        return 0
+    fi
+
+    local current_origin_url=""
+    current_origin_url=$(git -C "$repo_path" remote get-url origin 2>/dev/null || true)
+
+    if [[ "$current_origin_url" == "$desired_clone_url" ]]; then
+        return 0
+    fi
+
+    echo -n "  Syncing origin URL... "
+    local out status=0
+    if [[ -n "$current_origin_url" ]]; then
+        out=$(git -C "$repo_path" remote set-url origin "$desired_clone_url" 2>&1) || status=$?
+    else
+        out=$(git -C "$repo_path" remote add origin "$desired_clone_url" 2>&1) || status=$?
+    fi
+
+    if [[ $status -ne 0 ]]; then
+        echo "${out}" | tail -1
+        echo -e "  ${RED}ERROR: failed to update origin URL.${RESET}"
+        ALL_FAILED+=("${repo}")
+        return 1
+    fi
+
+    echo -e "${GREEN}OK${RESET}"
 }
 
 repo_has_local_changes() {
@@ -413,6 +575,10 @@ update_repo() {
         return
     fi
 
+    if ! ensure_origin_url "$repo" "$repo_path"; then
+        return
+    fi
+
     echo -n "  Fetching... "
     local fetch_out; fetch_out=$(git -C "$repo_path" fetch --prune origin 2>&1)
     local fetch_status=$?
@@ -458,7 +624,7 @@ print_workspace_header() {
     echo -e "  Workspace  : ${WORKSPACE_ROOT}"
     echo -e "  Source dir : ${src}"
     echo -e "  Resolved by: ${WORKSPACE_SOURCE}"
-    echo -e "  Git base   : ${base}"
+    echo -e "  Git base   : ${GIT_BASE_SUMMARY}"
     echo ""
 }
 
