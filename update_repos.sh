@@ -2,7 +2,7 @@
 
 # ============================================================
 # Repo update script
-# Uses `--workspace`, `ROS_WS`, or interactive input to resolve the workspace.
+# Uses `file_path` in config, `--workspace`, `ROS_WS`, or interactive input.
 #
 # Usage:
 #   ./update_repos.sh
@@ -11,6 +11,7 @@
 #   ./update_repos.sh --workspace /home/aeirobot/ROS2/alice4_develop_ws --config alice4_develop --repo alice_main,alice_common
 #
 # Config example:
+#   file_path: /home/aeirobot/ROS2/custom_src
 #   git_base_url: https://github.com/HERoEHS
 #   branches:
 #     alice_main: develop
@@ -41,6 +42,10 @@ SRC_DIR=""
 WORKSPACE_SOURCE=""
 DEFAULT_GIT_BASE_URL="${GIT_BASE_URL:-https://github.com/HERoEHS}"
 GIT_BASE_SUMMARY=""
+FALLBACK_WORKSPACE_ROOT=""
+FALLBACK_SRC_DIR=""
+FALLBACK_WORKSPACE_SOURCE=""
+CONFIG_FILE_PATH=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -74,6 +79,16 @@ if [ ${#AVAILABLE_YAMLS[@]} -eq 0 ]; then
 fi
 
 # ---- helpers ----
+
+expand_path_tokens() {
+    local path="$1"
+
+    path="${path/#\~/$HOME}"
+    path="${path//\$\{HOME\}/$HOME}"
+    path="${path//\$HOME/$HOME}"
+
+    printf '%s\n' "$path"
+}
 
 build_clone_url_from_base() {
     local base="$1"
@@ -113,6 +128,28 @@ get_git_base_summary() {
     else
         echo "mixed (per section/repo)"
     fi
+}
+
+get_config_file_path() {
+    local cfg="$1"
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        local trimmed indent path
+        trimmed=$(echo "$line" | sed 's/^[[:space:]]*//')
+        indent=$(( ${#line} - ${#trimmed} ))
+        [[ -z "$trimmed" || "$trimmed" =~ ^# ]] && continue
+
+        if (( indent == 0 )) && [[ "$trimmed" =~ ^file_path: ]]; then
+            path=$(echo "$trimmed" | cut -d: -f2- | xargs)
+            if [[ -n "$path" ]]; then
+                path="$(expand_path_tokens "$path")"
+                echo "$path"
+                return 0
+            fi
+        fi
+    done < "$cfg"
+
+    return 1
 }
 
 # Parse repo entries from yaml.
@@ -222,6 +259,7 @@ parse_repos_from_yaml() {
 set_workspace_paths() {
     local candidate="$1"
 
+    candidate="$(expand_path_tokens "$candidate")"
     candidate="${candidate%/}"
     if [[ "$candidate" == */src ]]; then
         SRC_DIR="$candidate"
@@ -232,13 +270,22 @@ set_workspace_paths() {
     fi
 }
 
+set_source_dir_path() {
+    local candidate="$1"
+
+    candidate="$(expand_path_tokens "$candidate")"
+    SRC_DIR="${candidate%/}"
+    WORKSPACE_ROOT=""
+}
+
 pick_workspace() {
     local input=""
 
     echo ""
     echo -e "${BOLD}${CYAN}========================================${RESET}"
-    echo -e "${BOLD}  Step 1 / 3  —  Select workspace${RESET}"
+    echo -e "${BOLD}  Select workspace${RESET}"
     echo -e "${BOLD}${CYAN}========================================${RESET}"
+    echo -e "  ${DIM}(used only when selected config does not define file_path)${RESET}"
     if [ -n "$ROS_WS" ]; then
         echo -e "  ${BOLD}[Enter]${RESET} Use ${CYAN}ROS_WS${RESET}: ${DIM}${ROS_WS}${RESET}"
     fi
@@ -266,29 +313,26 @@ resolve_workspace() {
     if [ -n "$WORKSPACE_INPUT" ]; then
         set_workspace_paths "$WORKSPACE_INPUT"
         WORKSPACE_SOURCE="--workspace"
-        return 0
-    fi
-
-    if [ -t 0 ]; then
+    elif [ -t 0 ]; then
         pick_workspace
-        return 0
-    fi
-
-    if [ -n "$ROS_WS" ]; then
+    elif [ -n "$ROS_WS" ]; then
         set_workspace_paths "$ROS_WS"
         WORKSPACE_SOURCE="ROS_WS"
-        return 0
+    else
+        echo -e "${RED}Workspace is not set. Use --workspace or export ROS_WS.${RESET}"
+        exit 1
     fi
 
-    echo -e "${RED}Workspace is not set. Use --workspace or export ROS_WS.${RESET}"
-    exit 1
+    FALLBACK_WORKSPACE_ROOT="$WORKSPACE_ROOT"
+    FALLBACK_SRC_DIR="$SRC_DIR"
+    FALLBACK_WORKSPACE_SOURCE="$WORKSPACE_SOURCE"
 }
 
-# ---- Step 2: config picker ----
+# ---- config picker ----
 pick_configs() {
     echo ""
     echo -e "${BOLD}${CYAN}========================================${RESET}"
-    echo -e "${BOLD}  Step 2 / 3  —  Select config${RESET}"
+    echo -e "${BOLD}  Select config${RESET}"
     echo -e "${BOLD}${CYAN}========================================${RESET}"
     echo ""
 
@@ -340,7 +384,7 @@ pick_configs() {
     CONFIG_FILES=("${deduped[@]}")
 }
 
-# ---- Step 3: repo picker ----
+# ---- repo picker ----
 # Reads repos from CONFIG_FILES; sets FILTER_REPOS.
 pick_repos() {
     # Collect all repos from selected configs (ordered, deduplicated)
@@ -382,7 +426,7 @@ pick_repos() {
 
     echo ""
     echo -e "${BOLD}${CYAN}========================================${RESET}"
-    echo -e "${BOLD}  Step 3 / 3  —  Select repo(s)${RESET}"
+    echo -e "${BOLD}  Select repo(s)${RESET}"
     echo -e "${BOLD}${CYAN}========================================${RESET}"
     echo ""
 
@@ -427,10 +471,7 @@ pick_repos() {
     fi
 }
 
-# ---- resolve workspace ----
-resolve_workspace
-
-# ---- resolve CONFIG_FILES (Step 2) ----
+# ---- resolve CONFIG_FILES ----
 CONFIG_FILES=()
 if [ ${#FILTER_CONFIGS[@]} -gt 0 ]; then
     for name in "${FILTER_CONFIGS[@]}"; do
@@ -450,7 +491,20 @@ else
     CONFIG_FILES=("${AVAILABLE_YAMLS[@]}")
 fi
 
-# ---- resolve FILTER_REPOS (Step 3) ----
+# ---- resolve workspace fallback when needed ----
+CONFIGS_NEED_WORKSPACE=false
+for cfg in "${CONFIG_FILES[@]}"; do
+    if ! get_config_file_path "$cfg" > /dev/null; then
+        CONFIGS_NEED_WORKSPACE=true
+        break
+    fi
+done
+
+if [ "$CONFIGS_NEED_WORKSPACE" = true ]; then
+    resolve_workspace
+fi
+
+# ---- resolve FILTER_REPOS ----
 # Only show repo picker in interactive mode when --repo was not given
 if [ ${#FILTER_REPOS[@]} -eq 0 ] && [ -t 0 ]; then
     pick_repos
@@ -468,6 +522,7 @@ load_config() {
     local cfg="$1"
     GIT_BASE_URL_CFG="$DEFAULT_GIT_BASE_URL"
     GIT_BASE_SUMMARY="$(get_git_base_summary "$cfg")"
+    CONFIG_FILE_PATH="$(get_config_file_path "$cfg" || true)"
     unset REPO_BRANCH; declare -gA REPO_BRANCH
     unset REPO_CLONE_URL; declare -gA REPO_CLONE_URL
 
@@ -479,6 +534,63 @@ load_config() {
             REPO_CLONE_URL["$repo"]="$clone_url"
         fi
     done < <(parse_repo_entries_from_yaml "$cfg")
+}
+
+ensure_source_dir_exists() {
+    if [ -d "$SRC_DIR" ]; then
+        return 0
+    fi
+
+    if [ -e "$SRC_DIR" ]; then
+        echo -e "${RED}Target path exists but is not a directory: ${SRC_DIR}${RESET}"
+        return 1
+    fi
+
+    if [ ! -t 0 ]; then
+        echo -e "${RED}Target directory does not exist: ${SRC_DIR}${RESET}"
+        echo -e "${RED}Run interactively to create it, or create it manually first.${RESET}"
+        return 1
+    fi
+
+    echo ""
+    echo -e "${YELLOW}Target directory does not exist:${RESET} ${SRC_DIR}"
+    echo -n "Create it now? [y/N] "
+
+    local answer=""
+    read -r answer
+
+    case "$answer" in
+        y|Y|yes|YES|Yes)
+            if ! mkdir -p "$SRC_DIR"; then
+                echo -e "${RED}Failed to create directory: ${SRC_DIR}${RESET}"
+                return 1
+            fi
+            echo -e "${GREEN}Created directory:${RESET} ${SRC_DIR}"
+            ;;
+        *)
+            echo -e "${YELLOW}Skipping because target directory was not created.${RESET}"
+            return 1
+            ;;
+    esac
+
+    return 0
+}
+
+resolve_source_dir_for_config() {
+    if [ -n "$CONFIG_FILE_PATH" ]; then
+        set_source_dir_path "$CONFIG_FILE_PATH"
+        WORKSPACE_SOURCE="file_path in config"
+    else
+        if [ -z "$FALLBACK_SRC_DIR" ]; then
+            echo -e "${RED}No workspace or file_path is available for this config.${RESET}"
+            return 1
+        fi
+        SRC_DIR="$FALLBACK_SRC_DIR"
+        WORKSPACE_ROOT="$FALLBACK_WORKSPACE_ROOT"
+        WORKSPACE_SOURCE="$FALLBACK_WORKSPACE_SOURCE"
+    fi
+
+    ensure_source_dir_exists
 }
 
 get_clone_url() {
@@ -621,7 +733,9 @@ print_workspace_header() {
     echo -e "${BOLD}${CYAN}========================================${RESET}"
     echo -e "${BOLD}${CYAN}  $(basename "$cfg" .yaml)${RESET}"
     echo -e "${BOLD}${CYAN}========================================${RESET}"
-    echo -e "  Workspace  : ${WORKSPACE_ROOT}"
+    if [ -n "$WORKSPACE_ROOT" ]; then
+        echo -e "  Workspace  : ${WORKSPACE_ROOT}"
+    fi
     echo -e "  Source dir : ${src}"
     echo -e "  Resolved by: ${WORKSPACE_SOURCE}"
     echo -e "  Git base   : ${GIT_BASE_SUMMARY}"
@@ -649,6 +763,10 @@ for cfg in "${CONFIG_FILES[@]}"; do
     fi
 
     load_config "$cfg"
+    if ! resolve_source_dir_for_config; then
+        echo ""
+        continue
+    fi
     print_workspace_header "$cfg" "$SRC_DIR" "$GIT_BASE_URL_CFG"
 
     for repo in "${!REPO_BRANCH[@]}"; do

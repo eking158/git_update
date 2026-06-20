@@ -1,0 +1,12 @@
+# Repo branch configuration for profile settigns
+file_path: $HOME/Aeirobot_Settings
+
+git_base_url: https://github.com/HERoEHS
+
+branches:
+  profile_settings: develop
+
+git_base_url: https://github.com/eking158
+
+branches:
+  git_update: develop

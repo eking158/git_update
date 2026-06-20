@@ -5,6 +5,7 @@
 이 스크립트로 다음 작업을 할 수 있습니다.
 
 - 없는 repo를 `<workspace>/src` 아래에 clone
+- `file_path`가 있으면 해당 경로에 바로 clone
 - 이미 있는 repo를 `fetch` + `pull`로 업데이트
 - 로컬 변경 사항이 있는 repo는 자동으로 skip
 - 하나의 config 파일 안에서 서로 다른 git base URL 사용
@@ -18,12 +19,15 @@
 
 workspace는 아래 순서로 결정됩니다.
 
-1. `--workspace <path>`
-2. 실행 중 직접 입력
-3. `ROS_WS` 환경 변수
+1. config의 `file_path`
+2. `--workspace <path>`
+3. 실행 중 직접 입력
+4. `ROS_WS` 환경 변수
 
 workspace root를 넘기면 내부적으로 `<workspace>/src`를 사용합니다.
 이미 `/src` 경로를 넘기면 그 경로를 그대로 사용합니다.
+config에 `file_path`가 있으면 workspace를 묻지 않고 해당 경로를 그대로 사용합니다.
+경로에는 `$HOME`, `${HOME}`, `~`를 사용할 수 있습니다.
 
 ## 기본 사용법
 
@@ -77,7 +81,31 @@ branches:
 https://github.com/HERoEHS/alice_main.git
 ```
 
-### 2. 하나의 파일에서 여러 Git Base URL 사용
+### 2. `file_path` 직접 지정
+
+```yaml
+file_path: /home/aeirobot/ROS2/custom_target_src
+
+git_base_url: https://github.com/HERoEHS
+
+branches:
+  alice_main: develop
+  alice_parameters: main
+```
+
+이 형식에서는 repo가 `<workspace>/src`가 아니라 `file_path` 아래에 바로 clone 또는 update됩니다.
+
+예:
+
+```text
+/home/aeirobot/ROS2/custom_target_src/alice_main
+```
+
+`file_path` 경로가 아직 없으면, 대화형 실행에서는 폴더를 생성할지 물어봅니다.
+비대화형 실행에서는 자동 생성하지 않고 에러를 출력합니다.
+`file_path`에도 `$HOME`, `${HOME}`, `~`를 사용할 수 있습니다.
+
+### 3. 하나의 파일에서 여러 Git Base URL 사용
 
 ```yaml
 git_base_url: https://github.com/HERoEHS
@@ -96,7 +124,7 @@ branches:
 
 이 형식에서는 각 `branches:` 블록이 바로 위에 선언된 `git_base_url`을 사용합니다.
 
-### 3. repo별 개별 URL override
+### 4. repo별 개별 URL override
 
 필요하면 특정 repo만 직접 URL을 지정할 수도 있습니다.
 
@@ -122,6 +150,7 @@ repo별로 사용할 수 있는 키는 아래와 같습니다.
 
 - 이 형식은 `update_repos.sh` 전용 config 형식입니다.
 - 하나의 파일 안에서 `git_base_url:`를 여러 번 쓰는 것을 이 스크립트는 지원합니다.
+- `file_path:`는 top-level에서 읽으며, 해당 config 전체의 target directory로 사용됩니다.
 - 일반적인 YAML parser에서는 중복 top-level key를 다르게 처리할 수 있으므로, 다른 YAML 도구와 공용으로 쓰는 용도에는 적합하지 않을 수 있습니다.
 
 ## 업데이트 동작
@@ -157,4 +186,10 @@ gripper workspace 업데이트:
 
 ```bash
 ./update_repos.sh --workspace /home/aeirobot/ROS2/blackbox_ws --config blackbox --repo aeirobot_debug_tools
+```
+
+`file_path` 사용 예시:
+
+```bash
+./update_repos.sh --config my_direct_path_config --repo alice_main
 ```
