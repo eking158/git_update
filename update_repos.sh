@@ -64,7 +64,7 @@ get_workspace() {
 parse_repos_from_yaml() {
     local cfg="$1"
     local in_branches=false
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
         if [[ "$line" =~ ^branches: ]]; then
             in_branches=true; continue
         fi
@@ -273,7 +273,7 @@ load_config() {
     GIT_BASE_URL_CFG="${base:-${GIT_BASE_URL:-https://github.com/HERoEHS}}"
 
     local in_branches=false
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
         if [[ "$line" =~ ^branches: ]]; then
             in_branches=true; continue
         fi
@@ -292,6 +292,11 @@ load_config() {
 
 get_clone_url() {
     echo "${GIT_BASE_URL_CFG%/}/${1}.git"
+}
+
+repo_has_local_changes() {
+    local repo_path="$1"
+    [ -n "$(git -C "$repo_path" status --porcelain --untracked-files=normal 2>/dev/null)" ]
 }
 
 clone_repo() {
@@ -334,11 +339,10 @@ update_repo() {
         clone_repo "$repo" "$target_branch"; return
     fi
 
-    local stashed=false
-    if ! git -C "$repo_path" diff --quiet || ! git -C "$repo_path" diff --cached --quiet; then
-        echo -e "  ${YELLOW}Uncommitted changes detected, stashing...${RESET}"
-        git -C "$repo_path" stash push -m "auto-stash by update_repos.sh" --include-untracked > /dev/null 2>&1
-        stashed=true
+    if repo_has_local_changes "$repo_path"; then
+        echo -e "  ${YELLOW}SKIP: uncommitted or untracked local changes detected.${RESET}"
+        ALL_SKIPPED+=("${repo}")
+        return
     fi
 
     echo -n "  Fetching... "
@@ -347,13 +351,11 @@ update_repo() {
     echo "$fetch_out" | tail -1
     if [ $fetch_status -ne 0 ]; then
         echo -e "  ${RED}ERROR: fetch failed.${RESET}"
-        [ "$stashed" = true ] && git -C "$repo_path" stash pop > /dev/null 2>&1
         ALL_FAILED+=("${repo}"); return
     fi
 
     if ! git -C "$repo_path" ls-remote --exit-code --heads origin "$target_branch" > /dev/null 2>&1; then
         echo -e "  ${RED}ERROR: branch '${target_branch}' not found on remote.${RESET}"
-        [ "$stashed" = true ] && git -C "$repo_path" stash pop > /dev/null 2>&1
         ALL_FAILED+=("${repo}"); return
     fi
 
@@ -362,7 +364,6 @@ update_repo() {
         echo -n "  Switching ${current_branch} → ${target_branch}... "
         if ! git -C "$repo_path" checkout "$target_branch" 2>&1; then
             echo -e "  ${RED}ERROR: checkout failed.${RESET}"
-            [ "$stashed" = true ] && git -C "$repo_path" stash pop > /dev/null 2>&1
             ALL_FAILED+=("${repo}"); return
         fi
     fi
@@ -373,17 +374,7 @@ update_repo() {
     echo "$pull_out" | tail -1
     if [ $pull_status -ne 0 ]; then
         echo -e "  ${RED}ERROR: pull failed.${RESET}"
-        [ "$stashed" = true ] && git -C "$repo_path" stash pop > /dev/null 2>&1
         ALL_FAILED+=("${repo}"); return
-    fi
-
-    if [ "$stashed" = true ]; then
-        echo -n "  Restoring stash... "
-        if git -C "$repo_path" stash pop > /dev/null 2>&1; then
-            echo -e "${GREEN}done${RESET}"
-        else
-            echo -e "${YELLOW}conflicts — resolve manually${RESET}"
-        fi
     fi
 
     echo -e "  ${GREEN}OK${RESET}"

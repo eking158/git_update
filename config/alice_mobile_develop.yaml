@@ -7,8 +7,7 @@ branches:
   aeirobot_toolbox: feature/m1_poc_hand_rad
   alice_mobile_common: develop
   alice_mobile_main: develop
-  alice_mobile_parameters: develop
-  alice_simulation: develop
-  alice_mobile_jetson: develop
+  alice_mobile_parameters: v0.1.0-hotfix
+  alice_mobile_jetson: feature/nextrise
   aeirobot_teleoperation: feature/web_ui
   ROS-TCP-Endpoint: feature/m1_poc
