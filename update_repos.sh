@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # ============================================================
-# Repo update script — multi-workspace support
-# Runs interactively when no --config / --repo is given.
+# Repo update script
+# Uses `--workspace`, `ROS_WS`, or interactive input to resolve the workspace.
 #
 # Usage:
-#   ./update_repos.sh                         # full interactive
-#   ./update_repos.sh --config alice_mobile   # skip workspace picker
-#   ./update_repos.sh --repo alice_main       # skip repo picker
-#   ./update_repos.sh --config alice4_develop --repo alice_main,alice_common
+#   ./update_repos.sh
+#   ./update_repos.sh --workspace /home/aeirobot/ROS2/blackbox_ws
+#   ROS_WS=/home/aeirobot/ROS2/blackbox_ws ./update_repos.sh --config blackbox
+#   ./update_repos.sh --workspace /home/aeirobot/ROS2/alice4_develop_ws --config alice4_develop --repo alice_main,alice_common
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,6 +26,10 @@ RESET='\033[0m'
 # ---- parse arguments ----
 FILTER_REPOS=()
 FILTER_CONFIGS=()
+WORKSPACE_INPUT=""
+WORKSPACE_ROOT=""
+SRC_DIR=""
+WORKSPACE_SOURCE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -35,6 +39,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --config)
             IFS=',' read -ra FILTER_CONFIGS <<< "$2"
+            shift 2
+            ;;
+        --workspace)
+            WORKSPACE_INPUT="$2"
             shift 2
             ;;
         *)
@@ -55,10 +63,6 @@ if [ ${#AVAILABLE_YAMLS[@]} -eq 0 ]; then
 fi
 
 # ---- helpers ----
-
-get_workspace() {
-    grep "^workspace:" "$1" | awk '{print $2}'
-}
 
 # Parse "repo branch" pairs from a yaml without touching global state
 parse_repos_from_yaml() {
@@ -81,21 +85,85 @@ parse_repos_from_yaml() {
     done < "$cfg"
 }
 
-# ---- Step 1: config picker ----
+# Resolve workspace root and src directory once per run.
+set_workspace_paths() {
+    local candidate="$1"
+
+    candidate="${candidate%/}"
+    if [[ "$candidate" == */src ]]; then
+        SRC_DIR="$candidate"
+        WORKSPACE_ROOT="${candidate%/src}"
+    else
+        WORKSPACE_ROOT="$candidate"
+        SRC_DIR="${candidate}/src"
+    fi
+}
+
+pick_workspace() {
+    local input=""
+
+    echo ""
+    echo -e "${BOLD}${CYAN}========================================${RESET}"
+    echo -e "${BOLD}  Step 1 / 3  —  Select workspace${RESET}"
+    echo -e "${BOLD}${CYAN}========================================${RESET}"
+    if [ -n "$ROS_WS" ]; then
+        echo -e "  ${BOLD}[Enter]${RESET} Use ${CYAN}ROS_WS${RESET}: ${DIM}${ROS_WS}${RESET}"
+    fi
+    echo -e "  Or type workspace path directly"
+    echo -n "  > "
+
+    read -r input
+    if [ -z "$input" ] && [ -n "$ROS_WS" ]; then
+        set_workspace_paths "$ROS_WS"
+        WORKSPACE_SOURCE="ROS_WS"
+        return 0
+    fi
+
+    if [ -n "$input" ]; then
+        set_workspace_paths "$input"
+        WORKSPACE_SOURCE="direct input"
+        return 0
+    fi
+
+    echo -e "${RED}Workspace path is required. Set ROS_WS or enter a path.${RESET}"
+    exit 1
+}
+
+resolve_workspace() {
+    if [ -n "$WORKSPACE_INPUT" ]; then
+        set_workspace_paths "$WORKSPACE_INPUT"
+        WORKSPACE_SOURCE="--workspace"
+        return 0
+    fi
+
+    if [ -t 0 ]; then
+        pick_workspace
+        return 0
+    fi
+
+    if [ -n "$ROS_WS" ]; then
+        set_workspace_paths "$ROS_WS"
+        WORKSPACE_SOURCE="ROS_WS"
+        return 0
+    fi
+
+    echo -e "${RED}Workspace is not set. Use --workspace or export ROS_WS.${RESET}"
+    exit 1
+}
+
+# ---- Step 2: config picker ----
 pick_configs() {
     echo ""
     echo -e "${BOLD}${CYAN}========================================${RESET}"
-    echo -e "${BOLD}  Step 1 / 2  —  Select config${RESET}"
+    echo -e "${BOLD}  Step 2 / 3  —  Select config${RESET}"
     echo -e "${BOLD}${CYAN}========================================${RESET}"
-    echo -e "  ${DIM}(config 선택 시 workspace 경로가 자동으로 결정됩니다)${RESET}"
     echo ""
 
     local i=1
     for yaml in "${AVAILABLE_YAMLS[@]}"; do
-        local name ws
+        local name
         name="$(basename "$yaml" .yaml)"
-        ws="$(get_workspace "$yaml")"
-        printf "  ${BOLD}[%d]${RESET} %-28s ${DIM}→ %s${RESET}\n" "$i" "$name" "$ws"
+        printf "  ${BOLD}[%d]${RESET} %s\n" "$i" "$name"
         (( i++ ))
     done
 
@@ -139,30 +207,30 @@ pick_configs() {
     CONFIG_FILES=("${deduped[@]}")
 }
 
-# ---- Step 2: repo picker ----
+# ---- Step 3: repo picker ----
 # Reads repos from CONFIG_FILES; sets FILTER_REPOS.
 pick_repos() {
     # Collect all repos from selected configs (ordered, deduplicated)
-    # Parallel arrays: PICK_REPOS, PICK_BRANCHES, PICK_WORKSPACES
+    # Parallel arrays: PICK_REPOS, PICK_BRANCHES, PICK_CONFIG_NAMES
     local -a PICK_REPOS=()
     local -a PICK_BRANCHES=()
-    local -a PICK_WORKSPACES=()    # space-separated list of ws names per repo
+    local -a PICK_CONFIG_NAMES=()    # space-separated list of config names per repo
     declare -A _seen_repo
 
     for cfg in "${CONFIG_FILES[@]}"; do
-        local wsname; wsname="$(basename "$cfg" .yaml)"
+        local cfgname; cfgname="$(basename "$cfg" .yaml)"
         while read -r repo branch; do
             if [[ -z "${_seen_repo[$repo]+x}" ]]; then
                 PICK_REPOS+=("$repo")
                 PICK_BRANCHES+=("$branch")
-                PICK_WORKSPACES+=("$wsname")
+                PICK_CONFIG_NAMES+=("$cfgname")
                 _seen_repo[$repo]=1
             else
-                # repo appears in multiple workspaces — append ws name
+                # repo appears in multiple configs — append config name
                 local idx
                 for idx in "${!PICK_REPOS[@]}"; do
                     if [[ "${PICK_REPOS[$idx]}" == "$repo" ]]; then
-                        PICK_WORKSPACES[$idx]+=" $wsname"
+                        PICK_CONFIG_NAMES[$idx]+=" $cfgname"
                         break
                     fi
                 done
@@ -176,21 +244,21 @@ pick_repos() {
         return
     fi
 
-    local multi_ws=false
-    [ ${#CONFIG_FILES[@]} -gt 1 ] && multi_ws=true
+    local multi_config=false
+    [ ${#CONFIG_FILES[@]} -gt 1 ] && multi_config=true
 
     echo ""
     echo -e "${BOLD}${CYAN}========================================${RESET}"
-    echo -e "${BOLD}  Step 2 / 2  —  Select repo(s)${RESET}"
+    echo -e "${BOLD}  Step 3 / 3  —  Select repo(s)${RESET}"
     echo -e "${BOLD}${CYAN}========================================${RESET}"
     echo ""
 
     for (( i=0; i<total; i++ )); do
         local repo="${PICK_REPOS[$i]}"
         local branch="${PICK_BRANCHES[$i]}"
-        local ws="${PICK_WORKSPACES[$i]}"
-        if [ "$multi_ws" = true ]; then
-            printf "  ${BOLD}[%d]${RESET} %-30s ${DIM}(%s)${RESET}\n" "$((i+1))" "$repo" "$ws"
+        local cfg_names="${PICK_CONFIG_NAMES[$i]}"
+        if [ "$multi_config" = true ]; then
+            printf "  ${BOLD}[%d]${RESET} %-30s ${DIM}(%s)${RESET}\n" "$((i+1))" "$repo" "$cfg_names"
         else
             printf "  ${BOLD}[%d]${RESET} %-30s ${DIM}branch: %s${RESET}\n" "$((i+1))" "$repo" "$branch"
         fi
@@ -226,7 +294,10 @@ pick_repos() {
     fi
 }
 
-# ---- resolve CONFIG_FILES (Step 1) ----
+# ---- resolve workspace ----
+resolve_workspace
+
+# ---- resolve CONFIG_FILES (Step 2) ----
 CONFIG_FILES=()
 if [ ${#FILTER_CONFIGS[@]} -gt 0 ]; then
     for name in "${FILTER_CONFIGS[@]}"; do
@@ -246,7 +317,7 @@ else
     CONFIG_FILES=("${AVAILABLE_YAMLS[@]}")
 fi
 
-# ---- resolve FILTER_REPOS (Step 2) ----
+# ---- resolve FILTER_REPOS (Step 3) ----
 # Only show repo picker in interactive mode when --repo was not given
 if [ ${#FILTER_REPOS[@]} -eq 0 ] && [ -t 0 ]; then
     pick_repos
@@ -262,14 +333,11 @@ ALL_SKIPPED=()
 
 load_config() {
     local cfg="$1"
-    SRC_DIR=""
     GIT_BASE_URL_CFG=""
     unset REPO_BRANCH; declare -gA REPO_BRANCH
 
-    local ws base
-    ws=$(grep "^workspace:" "$cfg" | awk '{print $2}')
+    local base
     base=$(grep "^git_base_url:" "$cfg" | awk '{print $2}')
-    SRC_DIR="${ws:+${ws}/src}"
     GIT_BASE_URL_CFG="${base:-${GIT_BASE_URL:-https://github.com/HERoEHS}}"
 
     local in_branches=false
@@ -387,7 +455,9 @@ print_workspace_header() {
     echo -e "${BOLD}${CYAN}========================================${RESET}"
     echo -e "${BOLD}${CYAN}  $(basename "$cfg" .yaml)${RESET}"
     echo -e "${BOLD}${CYAN}========================================${RESET}"
+    echo -e "  Workspace  : ${WORKSPACE_ROOT}"
     echo -e "  Source dir : ${src}"
+    echo -e "  Resolved by: ${WORKSPACE_SOURCE}"
     echo -e "  Git base   : ${base}"
     echo ""
 }

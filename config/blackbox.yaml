@@ -1,5 +1,4 @@
-# Branch configuration for alice_mobile_ws
-workspace: /home/aeirobot/ROS2/blackbox_ws
+# Repo branch configuration for blackbox
 git_base_url: https://github.com/HERoEHS
 
 branches:

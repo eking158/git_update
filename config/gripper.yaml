@@ -1,5 +1,4 @@
-# Branch configuration for alice_mobile_ws
-workspace: /home/aeirobot/ROS2/gripper_ws
+# Repo branch configuration for gripper
 git_base_url: https://github.com/HERoEHS
 
 branches:

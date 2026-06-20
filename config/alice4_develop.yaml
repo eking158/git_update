@@ -1,5 +1,4 @@
-# Branch configuration for alice4_develop_ws
-workspace: /home/aeirobot/ROS2/alice4_develop_ws
+# Repo branch configuration for alice4_develop
 git_base_url: https://github.com/HERoEHS
 
 branches:
