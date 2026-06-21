@@ -9,7 +9,8 @@
 #   ./update_repos.sh --workspace /home/aeirobot/ROS2/blackbox_ws
 #   ROS_WS=/home/aeirobot/ROS2/blackbox_ws ./update_repos.sh --config blackbox
 #   ./update_repos.sh --workspace /home/aeirobot/ROS2/alice4_develop_ws --config alice4_develop --repo alice_main,alice_common
-#   ./update_repos.sh --develop-sync-mode merge --config blackbox
+#   ./update_repos.sh --branch-mismatch-mode pull-current --config blackbox
+#   ./update_repos.sh --develop-sync-mode merge --branch-mismatch-mode pull-current --config blackbox
 #
 # Config example:
 #   file_path: /home/aeirobot/ROS2/custom_src
@@ -49,6 +50,8 @@ FALLBACK_WORKSPACE_SOURCE=""
 CONFIG_FILE_PATH=""
 DEVELOP_SYNC_MODE=""
 SELECTED_DEVELOP_SYNC_MODE=""
+BRANCH_MISMATCH_MODE=""
+SELECTED_BRANCH_MISMATCH_MODE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -66,6 +69,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --develop-sync-mode)
             DEVELOP_SYNC_MODE="$2"
+            shift 2
+            ;;
+        --branch-mismatch-mode)
+            BRANCH_MISMATCH_MODE="$2"
             shift 2
             ;;
         *)
@@ -703,6 +710,66 @@ choose_develop_sync_mode() {
     esac
 }
 
+choose_branch_mismatch_mode() {
+    local repo="$1"
+    local current_branch="$2"
+    local target_branch="$3"
+    local current_label="$current_branch"
+
+    if [[ -z "$current_label" ]]; then
+        current_label="detached HEAD"
+    fi
+
+    if [[ -n "$BRANCH_MISMATCH_MODE" ]]; then
+        case "$BRANCH_MISMATCH_MODE" in
+            switch|pull-current|skip)
+                SELECTED_BRANCH_MISMATCH_MODE="$BRANCH_MISMATCH_MODE"
+                return 0
+                ;;
+            ask)
+                ;;
+            *)
+                echo -e "  ${RED}ERROR: invalid --branch-mismatch-mode '${BRANCH_MISMATCH_MODE}'. Use switch, pull-current, skip, or ask.${RESET}"
+                ALL_FAILED+=("${repo}")
+                return 1
+                ;;
+        esac
+    fi
+
+    if [ ! -t 0 ]; then
+        echo -e "  ${YELLOW}Current branch is '${current_label}' while target branch is '${target_branch}'.${RESET}"
+        echo -e "  ${YELLOW}Non-interactive mode defaults to switching to the target branch. Use --branch-mismatch-mode switch|pull-current|skip to override.${RESET}"
+        SELECTED_BRANCH_MISMATCH_MODE="switch"
+        return 0
+    fi
+
+    echo -e "  ${YELLOW}Current branch is '${current_label}' while target branch is '${target_branch}'.${RESET}"
+    echo -e "  Choose how to update:"
+    echo -e "    ${BOLD}[1]${RESET} switch ${DIM}(recommended: checkout target branch, then pull)${RESET}"
+    echo -e "    ${BOLD}[2]${RESET} pull-current ${DIM}(stay on current branch and pull target branch into it)${RESET}"
+    echo -e "    ${BOLD}[0]${RESET} skip"
+    echo -n "  > "
+
+    local input=""
+    read -r input
+
+    case "$input" in
+        1|switch|SWITCH|Switch|"")
+            SELECTED_BRANCH_MISMATCH_MODE="switch"
+            ;;
+        2|pull-current|PULL-CURRENT|Pull-current|pull_current|PULL_CURRENT|Pull_current)
+            SELECTED_BRANCH_MISMATCH_MODE="pull-current"
+            ;;
+        0|skip|SKIP|Skip)
+            SELECTED_BRANCH_MISMATCH_MODE="skip"
+            ;;
+        *)
+            echo -e "  ${YELLOW}Unknown selection '${input}', switching to target branch by default.${RESET}"
+            SELECTED_BRANCH_MISMATCH_MODE="switch"
+            ;;
+    esac
+}
+
 sync_current_branch_with_develop() {
     local repo="$1"
     local repo_path="$2"
@@ -750,6 +817,53 @@ sync_current_branch_with_develop() {
     fi
 
     echo "$out" | tail -1
+    echo -e "  ${GREEN}OK${RESET}"
+    return 0
+}
+
+pull_target_branch_into_current_branch() {
+    local repo="$1"
+    local repo_path="$2"
+    local current_branch="$3"
+    local target_branch="$4"
+    local current_label="$current_branch"
+
+    if [[ -z "$current_label" ]]; then
+        current_label="detached HEAD"
+    fi
+
+    if [[ -z "$current_branch" ]]; then
+        echo -e "  ${YELLOW}SKIP: cannot pull '${target_branch}' directly into detached HEAD. Choose branch switching instead.${RESET}"
+        ALL_SKIPPED+=("${repo}")
+        return 2
+    fi
+
+    if [[ "$target_branch" == "develop" && -n "$DEVELOP_SYNC_MODE" ]]; then
+        choose_develop_sync_mode "$repo" "$current_branch"
+        local develop_mode_status=$?
+        if [[ $develop_mode_status -ne 0 ]]; then
+            return $develop_mode_status
+        fi
+
+        sync_current_branch_with_develop "$repo" "$repo_path" "$current_branch" "$SELECTED_DEVELOP_SYNC_MODE"
+        return $?
+    fi
+
+    echo -n "  Pulling ${target_branch} into ${current_label}... "
+    local pull_out; pull_out=$(git -C "$repo_path" pull origin "$target_branch" 2>&1)
+    local pull_status=$?
+    echo "$pull_out" | tail -1
+    if [ $pull_status -ne 0 ]; then
+        if git_output_has_local_change_blocker "$pull_out"; then
+            echo -e "  ${YELLOW}SKIP: local changes prevent pulling '${target_branch}' into '${current_label}'.${RESET}"
+            ALL_SKIPPED+=("${repo}")
+            return 2
+        fi
+        echo -e "  ${RED}ERROR: pull failed.${RESET}"
+        ALL_FAILED+=("${repo}")
+        return 1
+    fi
+
     echo -e "  ${GREEN}OK${RESET}"
     return 0
 }
@@ -858,35 +972,41 @@ update_repo() {
             ALL_FAILED+=("${repo}"); return
         fi
 
-        if ! switch_to_target_branch "$repo" "$repo_path" "$target_branch" "$current_branch"; then
-            local switch_status=$?
-            if [[ $switch_status -eq 2 ]]; then
-                if [[ "$target_branch" == "develop" && -n "$current_branch" ]]; then
-                    if ! choose_develop_sync_mode "$repo" "$current_branch"; then
-                        return
-                    fi
-
-                    sync_current_branch_with_develop "$repo" "$repo_path" "$current_branch" "$SELECTED_DEVELOP_SYNC_MODE"
-                    local develop_sync_status=$?
-                    if [[ $develop_sync_status -eq 2 ]]; then
-                        return
-                    fi
-                    if [[ $develop_sync_status -ne 0 ]]; then
-                        return
-                    fi
-
-                    ALL_SUCCESS+=("${repo}")
-                    return
-                fi
-
-                echo -e "  ${YELLOW}SKIP: local changes prevent switching to '${target_branch}'.${RESET}"
-                ALL_SKIPPED+=("${repo}")
-                return
-            fi
-            return
+        choose_branch_mismatch_mode "$repo" "$current_branch" "$target_branch"
+        local mismatch_mode_status=$?
+        if [[ $mismatch_mode_status -ne 0 ]]; then
+            return $mismatch_mode_status
         fi
 
-        current_branch="$target_branch"
+        case "$SELECTED_BRANCH_MISMATCH_MODE" in
+            skip)
+                echo -e "  ${YELLOW}SKIP: branch mismatch update was skipped by user selection.${RESET}"
+                ALL_SKIPPED+=("${repo}")
+                return
+                ;;
+            pull-current)
+                pull_target_branch_into_current_branch "$repo" "$repo_path" "$current_branch" "$target_branch"
+                local pull_current_status=$?
+                if [[ $pull_current_status -ne 0 ]]; then
+                    return $pull_current_status
+                fi
+                ALL_SUCCESS+=("${repo}")
+                return
+                ;;
+            switch)
+                switch_to_target_branch "$repo" "$repo_path" "$target_branch" "$current_branch"
+                local switch_status=$?
+                if [[ $switch_status -ne 0 ]]; then
+                    if [[ $switch_status -eq 2 ]]; then
+                        echo -e "  ${YELLOW}SKIP: local changes prevent switching to '${target_branch}'.${RESET}"
+                        ALL_SKIPPED+=("${repo}")
+                        return
+                    fi
+                    return $switch_status
+                fi
+                current_branch="$target_branch"
+                ;;
+        esac
     fi
 
     if ! git -C "$repo_path" ls-remote --exit-code --heads origin "$target_branch" > /dev/null 2>&1; then

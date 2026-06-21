@@ -7,7 +7,8 @@
 - 없는 repo를 `<workspace>/src` 아래에 clone
 - `file_path`가 있으면 해당 경로에 바로 clone
 - 이미 있는 repo를 `fetch` + `pull`로 업데이트
-- 로컬 변경 사항이 있는 repo는 자동으로 skip
+- branch가 다를 때는 `대상 branch로 전환 후 pull` 또는 `현재 branch에서 대상 branch를 바로 pull` 중 선택 가능
+- Git이 로컬 변경 사항 때문에 실제로 진행을 막는 경우에만 skip
 - 하나의 config 파일 안에서 서로 다른 git base URL 사용
 
 ## 위치
@@ -56,10 +57,16 @@ workspace 경로 직접 지정:
 ./update_repos.sh --workspace /home/aeirobot/ROS2/alice_mobile_ws --config alice_mobile_develop --repo alice_mobile_main,alice_mobile_parameters
 ```
 
-`develop` sync 방식을 미리 지정:
+branch mismatch 처리 방식을 미리 지정:
 
 ```bash
-./update_repos.sh --develop-sync-mode merge --config blackbox
+./update_repos.sh --branch-mismatch-mode pull-current --config blackbox
+```
+
+`develop`을 현재 branch로 가져올 때 sync 방식을 미리 지정:
+
+```bash
+./update_repos.sh --develop-sync-mode merge --branch-mismatch-mode pull-current --config blackbox
 ```
 
 ## Config 형식
@@ -165,20 +172,17 @@ repo별로 사용할 수 있는 키는 아래와 같습니다.
 
 1. 로컬에 repo가 없으면 clone
 2. repo가 이미 있으면 먼저 `git fetch --prune origin`
-3. 현재 branch가 다르면 가능한 경우 대상 branch로 바로 전환
-4. 로컬 변경 사항이 있어도 `checkout` 또는 `pull`이 실제로 가능한 경우 그대로 진행
-5. 아래 상황처럼 Git이 로컬 변경 사항 때문에 진행을 거부할 때만 skip
+3. 현재 branch가 다르면 원격에 대상 branch가 있는지 먼저 확인
+4. branch mismatch가 있으면 사용자가 아래 중 하나를 선택
+   - 대상 branch로 전환한 뒤 `git pull origin <target_branch>`
+   - 현재 branch를 유지한 채 `git pull origin <target_branch>`
+   - skip
+5. 비대화형 실행에서는 `--branch-mismatch-mode switch|pull-current|skip`로 미리 지정 가능
+6. `--branch-mismatch-mode pull-current`와 `--develop-sync-mode merge|rebase|skip`를 함께 쓰면, 대상 branch가 `develop`일 때는 현재 branch 위로 최신 `develop`을 `merge` 또는 `rebase` 방식으로 가져올 수 있음
+7. 로컬 변경 사항이 있어도 `checkout` 또는 `pull`이 실제로 가능한 경우 그대로 진행
+8. 아래 상황처럼 Git이 로컬 변경 사항 때문에 진행을 거부할 때만 skip
    - branch 전환 시 덮어쓰기 위험이 있는 경우
    - pull/merge 시 덮어쓰기 위험이 있는 경우
-6. 업데이트가 진행되면
-   - `git fetch --prune origin`
-   - 원격에 pull 대상 branch가 있는지 확인
-   - 현재 branch가 다르면 기본적으로 대상 branch로 전환
-   - 로컬에 대상 branch가 없으면 원격 branch를 fetch한 뒤 local branch 생성 후 전환
-   - 단, branch 전환이 로컬 변경 때문에 막히고 YAML의 branch가 `develop`이면 현재 branch 위로 최신 `develop`을 가져오는 fallback 사용 가능
-   - 이때 사용자는 `merge`, `rebase`, `skip` 중 하나를 선택할 수 있음
-   - 비대화형 실행에서는 `--develop-sync-mode merge|rebase|skip`로 미리 지정 가능
-   - 일반 branch 업데이트는 `git pull origin <branch>`를 사용
 
 repo별 custom clone URL이 설정되어 있으면 fetch 전에 `origin` URL도 같이 맞춰줍니다.
 
