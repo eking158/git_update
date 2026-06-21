@@ -164,13 +164,18 @@ repo별로 사용할 수 있는 키는 아래와 같습니다.
 각 repo마다 아래 순서로 동작합니다.
 
 1. 로컬에 repo가 없으면 clone
-2. uncommitted 또는 untracked 변경 사항이 있으면 skip
-3. repo가 있고 깨끗한 상태라면
+2. repo가 이미 있으면 먼저 `git fetch --prune origin`
+3. 현재 branch가 다르면 가능한 경우 대상 branch로 바로 전환
+4. 로컬 변경 사항이 있어도 `checkout` 또는 `pull`이 실제로 가능한 경우 그대로 진행
+5. 아래 상황처럼 Git이 로컬 변경 사항 때문에 진행을 거부할 때만 skip
+   - branch 전환 시 덮어쓰기 위험이 있는 경우
+   - pull/merge 시 덮어쓰기 위험이 있는 경우
+6. 업데이트가 진행되면
    - `git fetch --prune origin`
    - 원격에 pull 대상 branch가 있는지 확인
    - 현재 branch가 다르면 기본적으로 대상 branch로 전환
    - 로컬에 대상 branch가 없으면 원격 branch를 fetch한 뒤 local branch 생성 후 전환
-   - 단, YAML의 branch가 `develop`이고 현재 branch가 다르면 현재 branch 위로 최신 `develop`을 가져옴
+   - 단, branch 전환이 로컬 변경 때문에 막히고 YAML의 branch가 `develop`이면 현재 branch 위로 최신 `develop`을 가져오는 fallback 사용 가능
    - 이때 사용자는 `merge`, `rebase`, `skip` 중 하나를 선택할 수 있음
    - 비대화형 실행에서는 `--develop-sync-mode merge|rebase|skip`로 미리 지정 가능
    - 일반 branch 업데이트는 `git pull origin <branch>`를 사용

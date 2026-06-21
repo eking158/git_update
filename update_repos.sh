@@ -643,6 +643,14 @@ ensure_origin_url() {
     echo -e "${GREEN}OK${RESET}"
 }
 
+git_output_has_local_change_blocker() {
+    local output="$1"
+
+    [[ "$output" == *"Please commit your changes or stash them before you"* ]] \
+        || [[ "$output" == *"Your local changes to the following files would be overwritten by"* ]] \
+        || [[ "$output" == *"The following untracked working tree files would be overwritten by"* ]]
+}
+
 choose_develop_sync_mode() {
     local repo="$1"
     local current_branch="$2"
@@ -778,17 +786,16 @@ switch_to_target_branch() {
 
     if [[ $status -ne 0 ]]; then
         echo "${out}" | tail -1
+        if git_output_has_local_change_blocker "$out"; then
+            echo -e "  ${YELLOW}NOTE: local changes prevent switching branches directly.${RESET}"
+            return 2
+        fi
         echo -e "  ${RED}ERROR: checkout failed.${RESET}"
         ALL_FAILED+=("${repo}")
         return 1
     fi
 
     echo -e "${GREEN}OK${RESET}"
-}
-
-repo_has_local_changes() {
-    local repo_path="$1"
-    [ -n "$(git -C "$repo_path" status --porcelain --untracked-files=normal 2>/dev/null)" ]
 }
 
 clone_repo() {
@@ -831,12 +838,6 @@ update_repo() {
         clone_repo "$repo" "$target_branch"; return
     fi
 
-    if repo_has_local_changes "$repo_path"; then
-        echo -e "  ${YELLOW}SKIP: uncommitted or untracked local changes detected.${RESET}"
-        ALL_SKIPPED+=("${repo}")
-        return
-    fi
-
     if ! ensure_origin_url "$repo" "$repo_path"; then
         return
     fi
@@ -852,32 +853,40 @@ update_repo() {
 
     local current_branch; current_branch=$(git -C "$repo_path" branch --show-current)
     if [ "$current_branch" != "$target_branch" ]; then
-        if [[ "$target_branch" == "develop" && -n "$current_branch" ]]; then
-            if ! choose_develop_sync_mode "$repo" "$current_branch"; then
-                return
-            fi
-
-            sync_current_branch_with_develop "$repo" "$repo_path" "$current_branch" "$SELECTED_DEVELOP_SYNC_MODE"
-            local develop_sync_status=$?
-            if [[ $develop_sync_status -eq 2 ]]; then
-                return
-            fi
-            if [[ $develop_sync_status -ne 0 ]]; then
-                return
-            fi
-
-            ALL_SUCCESS+=("${repo}")
-            return
-        else
-            if ! git -C "$repo_path" ls-remote --exit-code --heads origin "$target_branch" > /dev/null 2>&1; then
-                echo -e "  ${RED}ERROR: branch '${target_branch}' not found on remote.${RESET}"
-                ALL_FAILED+=("${repo}"); return
-            fi
-
-            if ! switch_to_target_branch "$repo" "$repo_path" "$target_branch" "$current_branch"; then
-                return
-            fi
+        if ! git -C "$repo_path" ls-remote --exit-code --heads origin "$target_branch" > /dev/null 2>&1; then
+            echo -e "  ${RED}ERROR: branch '${target_branch}' not found on remote.${RESET}"
+            ALL_FAILED+=("${repo}"); return
         fi
+
+        if ! switch_to_target_branch "$repo" "$repo_path" "$target_branch" "$current_branch"; then
+            local switch_status=$?
+            if [[ $switch_status -eq 2 ]]; then
+                if [[ "$target_branch" == "develop" && -n "$current_branch" ]]; then
+                    if ! choose_develop_sync_mode "$repo" "$current_branch"; then
+                        return
+                    fi
+
+                    sync_current_branch_with_develop "$repo" "$repo_path" "$current_branch" "$SELECTED_DEVELOP_SYNC_MODE"
+                    local develop_sync_status=$?
+                    if [[ $develop_sync_status -eq 2 ]]; then
+                        return
+                    fi
+                    if [[ $develop_sync_status -ne 0 ]]; then
+                        return
+                    fi
+
+                    ALL_SUCCESS+=("${repo}")
+                    return
+                fi
+
+                echo -e "  ${YELLOW}SKIP: local changes prevent switching to '${target_branch}'.${RESET}"
+                ALL_SKIPPED+=("${repo}")
+                return
+            fi
+            return
+        fi
+
+        current_branch="$target_branch"
     fi
 
     if ! git -C "$repo_path" ls-remote --exit-code --heads origin "$target_branch" > /dev/null 2>&1; then
@@ -890,6 +899,10 @@ update_repo() {
     local pull_status=$?
     echo "$pull_out" | tail -1
     if [ $pull_status -ne 0 ]; then
+        if git_output_has_local_change_blocker "$pull_out"; then
+            echo -e "  ${YELLOW}SKIP: local changes prevent pull.${RESET}"
+            ALL_SKIPPED+=("${repo}"); return
+        fi
         echo -e "  ${RED}ERROR: pull failed.${RESET}"
         ALL_FAILED+=("${repo}"); return
     fi
