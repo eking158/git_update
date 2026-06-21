@@ -685,27 +685,27 @@ choose_develop_sync_mode() {
 
     echo -e "  ${YELLOW}Target branch is 'develop' while current branch is '${current_branch}'.${RESET}"
     echo -e "  Choose how to bring latest develop into the current branch:"
-    echo -e "    ${BOLD}[1]${RESET} merge ${DIM}(recommended)${RESET}"
-    echo -e "    ${BOLD}[2]${RESET} rebase"
-    echo -e "    ${BOLD}[0]${RESET} skip"
+    echo -e "    ${BOLD}[0]${RESET} merge ${DIM}(recommended)${RESET}"
+    echo -e "    ${BOLD}[1]${RESET} rebase"
+    echo -e "    ${BOLD}[2]${RESET} skip"
     echo -n "  > "
 
     local input=""
     read -r input
 
     case "$input" in
-        1|merge|MERGE|Merge)
+        0|merge|MERGE|Merge|"")
             SELECTED_DEVELOP_SYNC_MODE="merge"
             ;;
-        2|rebase|REBASE|Rebase)
+        1|rebase|REBASE|Rebase)
             SELECTED_DEVELOP_SYNC_MODE="rebase"
             ;;
-        0|skip|SKIP|Skip|"")
+        2|skip|SKIP|Skip)
             SELECTED_DEVELOP_SYNC_MODE="skip"
             ;;
         *)
-            echo -e "  ${YELLOW}Unknown selection '${input}', skipping.${RESET}"
-            SELECTED_DEVELOP_SYNC_MODE="skip"
+            echo -e "  ${YELLOW}Unknown selection '${input}', merging by default.${RESET}"
+            SELECTED_DEVELOP_SYNC_MODE="merge"
             ;;
     esac
 }
@@ -745,22 +745,22 @@ choose_branch_mismatch_mode() {
 
     echo -e "  ${YELLOW}Current branch is '${current_label}' while target branch is '${target_branch}'.${RESET}"
     echo -e "  Choose how to update:"
-    echo -e "    ${BOLD}[1]${RESET} switch ${DIM}(recommended: checkout target branch, then pull)${RESET}"
-    echo -e "    ${BOLD}[2]${RESET} pull-current ${DIM}(stay on current branch and pull target branch into it)${RESET}"
-    echo -e "    ${BOLD}[0]${RESET} skip"
+    echo -e "    ${BOLD}[0]${RESET} switch ${DIM}(recommended: checkout target branch, then pull)${RESET}"
+    echo -e "    ${BOLD}[1]${RESET} pull-current ${DIM}(stay on current branch and pull target branch into it)${RESET}"
+    echo -e "    ${BOLD}[2]${RESET} skip"
     echo -n "  > "
 
     local input=""
     read -r input
 
     case "$input" in
-        1|switch|SWITCH|Switch|"")
+        0|switch|SWITCH|Switch|"")
             SELECTED_BRANCH_MISMATCH_MODE="switch"
             ;;
-        2|pull-current|PULL-CURRENT|Pull-current|pull_current|PULL_CURRENT|Pull_current)
+        1|pull-current|PULL-CURRENT|Pull-current|pull_current|PULL_CURRENT|Pull_current)
             SELECTED_BRANCH_MISMATCH_MODE="pull-current"
             ;;
-        0|skip|SKIP|Skip)
+        2|skip|SKIP|Skip)
             SELECTED_BRANCH_MISMATCH_MODE="skip"
             ;;
         *)
