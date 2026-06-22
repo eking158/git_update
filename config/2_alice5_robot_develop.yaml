@@ -1,4 +1,5 @@
-# Repo branch configuration for blackbox
+# Repo branch configuration for alice5 real robot
+file_path: $HOME/ROS2/alice5_robot_ws/src
 git_base_url: https://github.com/HERoEHS
 
 branches:
@@ -14,8 +15,11 @@ branches:
   profile_settings: develop
   aeirobot_thirdparty: develop
   alice_mpc: develop
-  alice_vision: develop
-  alice_localization: develop
+  alice_vision: 
+    branch: develop
+    submodules: true
+  alice_localization: 
+    branch: develop
+    submodules: true
   alice_whistle: develop
   aeirobot_blackbox: develop
-  aeirobot_orin_one_touch: develop

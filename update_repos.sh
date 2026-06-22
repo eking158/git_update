@@ -18,6 +18,9 @@
 #   branches:
 #     alice_main: develop
 #     alice_parameters: main
+#     alice_with_submodules:
+#       branch: develop
+#       submodules: true
 #   git_base_url: https://github.com/eking
 #   branches:
 #     profile_settings: develop
@@ -176,6 +179,7 @@ parse_repo_entries_from_yaml() {
     local current_branch=""
     local current_clone_url=""
     local current_repo_git_base_url=""
+    local current_submodules=""
 
     flush_current_repo_entry() {
         local effective_clone_url="$current_clone_url"
@@ -189,12 +193,13 @@ parse_repo_entries_from_yaml() {
             effective_clone_url="$(build_clone_url_from_base "$effective_git_base_url" "$current_repo")"
         fi
         if [[ -n "$current_repo" && -n "$current_branch" ]]; then
-            printf "%s\t%s\t%s\n" "$current_repo" "$current_branch" "$effective_clone_url"
+            printf "%s\t%s\t%s\t%s\n" "$current_repo" "$current_branch" "$effective_clone_url" "$current_submodules"
         fi
         current_repo=""
         current_branch=""
         current_clone_url=""
         current_repo_git_base_url=""
+        current_submodules=""
     }
 
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -254,6 +259,9 @@ parse_repo_entries_from_yaml() {
                 git_base_url)
                     current_repo_git_base_url="$value"
                     ;;
+                submodules)
+                    current_submodules="$value"
+                    ;;
             esac
         fi
     done < "$cfg"
@@ -264,7 +272,7 @@ parse_repo_entries_from_yaml() {
 # Parse "repo branch" pairs from a yaml without touching global state
 parse_repos_from_yaml() {
     local cfg="$1"
-    while IFS=$'\t' read -r repo branch _clone_url; do
+    while IFS=$'\t' read -r repo branch _clone_url _submodules; do
         [[ -n "$repo" && -n "$branch" ]] && printf "%s %s\n" "$repo" "$branch"
     done < <(parse_repo_entries_from_yaml "$cfg")
 }
@@ -539,13 +547,17 @@ load_config() {
     CONFIG_FILE_PATH="$(get_config_file_path "$cfg" || true)"
     unset REPO_BRANCH; declare -gA REPO_BRANCH
     unset REPO_CLONE_URL; declare -gA REPO_CLONE_URL
+    unset REPO_SUBMODULES; declare -gA REPO_SUBMODULES
 
-    local repo branch clone_url
-    while IFS=$'\t' read -r repo branch clone_url; do
+    local repo branch clone_url submodules
+    while IFS=$'\t' read -r repo branch clone_url submodules; do
         [[ -z "$repo" || -z "$branch" ]] && continue
         REPO_BRANCH["$repo"]="$branch"
         if [[ -n "$clone_url" ]]; then
             REPO_CLONE_URL["$repo"]="$clone_url"
+        fi
+        if [[ "$submodules" == "true" || "$submodules" == "yes" || "$submodules" == "1" ]]; then
+            REPO_SUBMODULES["$repo"]="true"
         fi
     done < <(parse_repo_entries_from_yaml "$cfg")
 }
@@ -912,6 +924,24 @@ switch_to_target_branch() {
     echo -e "${GREEN}OK${RESET}"
 }
 
+run_submodule_update() {
+    local repo="$1"
+    local repo_path="$2"
+
+    [[ "${REPO_SUBMODULES[$repo]}" != "true" ]] && return 0
+
+    echo -n "  Updating submodules... "
+    local out status=0
+    out=$(git -C "$repo_path" submodule update --init --recursive 2>&1) || status=$?
+    if [[ $status -ne 0 ]]; then
+        echo "${out}" | tail -1
+        echo -e "  ${RED}ERROR: submodule update failed.${RESET}"
+        ALL_FAILED+=("${repo}")
+        return 1
+    fi
+    echo -e "${GREEN}OK${RESET}"
+}
+
 clone_repo() {
     local repo="$1" target_branch="$2"
     local repo_path="${SRC_DIR}/${repo}"
@@ -939,6 +969,7 @@ clone_repo() {
     fi
 
     echo -e "  ${GREEN}Cloned → '${target_branch}'${RESET}"
+    run_submodule_update "$repo" "$repo_path"
     ALL_CLONED+=("${repo}"); ALL_SUCCESS+=("${repo}")
 }
 
@@ -990,6 +1021,7 @@ update_repo() {
                 if [[ $pull_current_status -ne 0 ]]; then
                     return $pull_current_status
                 fi
+                run_submodule_update "$repo" "$repo_path"
                 ALL_SUCCESS+=("${repo}")
                 return
                 ;;
@@ -1028,6 +1060,7 @@ update_repo() {
     fi
 
     echo -e "  ${GREEN}OK${RESET}"
+    run_submodule_update "$repo" "$repo_path"
     ALL_SUCCESS+=("${repo}")
 }
 

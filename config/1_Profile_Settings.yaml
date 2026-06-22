@@ -5,6 +5,9 @@ git_base_url: https://github.com/HERoEHS
 
 branches:
   profile_settings: develop
+  aeirobot_orin_one_touch: develop
+
+#-----------------------------------------------------
 
 git_base_url: https://github.com/eking158
 
