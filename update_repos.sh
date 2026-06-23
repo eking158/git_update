@@ -670,6 +670,12 @@ git_output_has_local_change_blocker() {
         || [[ "$output" == *"The following untracked working tree files would be overwritten by"* ]]
 }
 
+git_output_has_index_lock_blocker() {
+    local output="$1"
+
+    [[ "$output" == *".git/index.lock"* ]] && [[ "$output" == *"File exists"* ]]
+}
+
 choose_develop_sync_mode() {
     local repo="$1"
     local current_branch="$2"
@@ -886,6 +892,7 @@ switch_to_target_branch() {
     local target_branch="$3"
     local current_branch="$4"
     local label="$current_branch"
+    local target_branch_exists_locally=0
 
     if [[ -z "$label" ]]; then
         label="detached HEAD"
@@ -895,6 +902,7 @@ switch_to_target_branch() {
 
     local out status=0
     if git -C "$repo_path" show-ref --verify --quiet "refs/heads/$target_branch"; then
+        target_branch_exists_locally=1
         out=$(git -C "$repo_path" checkout "$target_branch" 2>&1) || status=$?
     else
         echo -n "  Fetching target branch ref... "
@@ -911,6 +919,31 @@ switch_to_target_branch() {
     fi
 
     if [[ $status -ne 0 ]]; then
+        if git_output_has_index_lock_blocker "$out"; then
+            local index_lock_path="${repo_path}/.git/index.lock"
+            if [[ -f "$index_lock_path" ]]; then
+                echo -e "  ${YELLOW}NOTE: stale index.lock detected. Removing it and retrying branch switch.${RESET}"
+                rm -f "$index_lock_path"
+                if [[ $? -ne 0 ]]; then
+                    echo -e "  ${RED}ERROR: failed to remove stale index.lock.${RESET}"
+                    ALL_FAILED+=("${repo}")
+                    return 1
+                fi
+
+                status=0
+                if [[ $target_branch_exists_locally -eq 1 ]]; then
+                    out=$(git -C "$repo_path" checkout "$target_branch" 2>&1) || status=$?
+                else
+                    out=$(git -C "$repo_path" checkout -b "$target_branch" FETCH_HEAD 2>&1) || status=$?
+                fi
+            fi
+        fi
+
+        if [[ $status -eq 0 ]]; then
+            echo -e "${GREEN}OK${RESET}"
+            return 0
+        fi
+
         echo "${out}" | tail -1
         if git_output_has_local_change_blocker "$out"; then
             echo -e "  ${YELLOW}NOTE: local changes prevent switching branches directly.${RESET}"
