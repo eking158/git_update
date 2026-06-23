@@ -1030,8 +1030,14 @@ update_repo() {
                 local switch_status=$?
                 if [[ $switch_status -ne 0 ]]; then
                     if [[ $switch_status -eq 2 ]]; then
-                        echo -e "  ${YELLOW}SKIP: local changes prevent switching to '${target_branch}'.${RESET}"
-                        ALL_SKIPPED+=("${repo}")
+                        echo -e "  ${YELLOW}NOTE: switching to '${target_branch}' was blocked by local changes. Trying pull on the current branch before skipping.${RESET}"
+                        pull_target_branch_into_current_branch "$repo" "$repo_path" "$current_branch" "$target_branch"
+                        local fallback_pull_status=$?
+                        if [[ $fallback_pull_status -ne 0 ]]; then
+                            return $fallback_pull_status
+                        fi
+                        run_submodule_update "$repo" "$repo_path"
+                        ALL_SUCCESS+=("${repo}")
                         return
                     fi
                     return $switch_status

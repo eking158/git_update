@@ -8,6 +8,7 @@
 - `file_path`가 있으면 해당 경로에 바로 clone
 - 이미 있는 repo를 `fetch` + `pull`로 업데이트
 - branch가 다를 때는 `대상 branch로 전환 후 pull` 또는 `현재 branch에서 대상 branch를 바로 pull` 중 선택 가능
+- branch 전환이 로컬 변경 때문에 막히면, skip 전에 현재 branch에서 대상 branch를 한 번 더 pull 시도
 - Git이 로컬 변경 사항 때문에 실제로 진행을 막는 경우에만 skip
 - 하나의 config 파일 안에서 서로 다른 git base URL 사용
 
@@ -177,10 +178,11 @@ repo별로 사용할 수 있는 키는 아래와 같습니다.
    - 대상 branch로 전환한 뒤 `git pull origin <target_branch>`
    - 현재 branch를 유지한 채 `git pull origin <target_branch>`
    - skip
-5. 비대화형 실행에서는 `--branch-mismatch-mode switch|pull-current|skip`로 미리 지정 가능
-6. `--branch-mismatch-mode pull-current`와 `--develop-sync-mode merge|rebase|skip`를 함께 쓰면, 대상 branch가 `develop`일 때는 현재 branch 위로 최신 `develop`을 `merge` 또는 `rebase` 방식으로 가져올 수 있음
-7. 로컬 변경 사항이 있어도 `checkout` 또는 `pull`이 실제로 가능한 경우 그대로 진행
-8. 아래 상황처럼 Git이 로컬 변경 사항 때문에 진행을 거부할 때만 skip
+5. `switch`를 골랐는데 branch 전환이 로컬 변경 때문에 막히면, 바로 skip하지 않고 현재 branch에서 `git pull origin <target_branch>`를 한 번 더 시도
+6. 비대화형 실행에서는 `--branch-mismatch-mode switch|pull-current|skip`로 미리 지정 가능
+7. `--branch-mismatch-mode pull-current`와 `--develop-sync-mode merge|rebase|skip`를 함께 쓰면, 대상 branch가 `develop`일 때는 현재 branch 위로 최신 `develop`을 `merge` 또는 `rebase` 방식으로 가져올 수 있음
+8. 로컬 변경 사항이 있어도 `checkout` 또는 `pull`이 실제로 가능한 경우 그대로 진행
+9. 아래 상황처럼 Git이 로컬 변경 사항 때문에 진행을 거부할 때만 skip
    - branch 전환 시 덮어쓰기 위험이 있는 경우
    - pull/merge 시 덮어쓰기 위험이 있는 경우
 
