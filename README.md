@@ -17,7 +17,8 @@
 ## 위치
 
 - Script: `update_repos.sh`
-- Configs: `config/*.yaml`
+- Shared configs: `config/*.yaml`
+- Local-only configs: `personal_config/*.yaml`
 
 ## Workspace 결정 순서
 
@@ -33,6 +34,10 @@ workspace root를 넘기면 내부적으로 `<workspace>/src`를 사용합니다
 config에 `file_path`가 있으면 workspace를 묻지 않고 해당 경로를 그대로 사용합니다.
 경로에는 `$HOME`, `${HOME}`, `~`를 사용할 수 있습니다.
 
+`update_repos.sh`는 `personal_config`와 `config`를 모두 읽습니다.
+같은 이름의 config가 두 폴더에 모두 있으면 `--config <name>`은 `personal_config`를 먼저 사용합니다.
+`personal_config` 아래 파일은 `.gitignore`로 기본 제외되므로 로컬 전용 config를 두는 용도로 쓰면 됩니다.
+
 ## 기본 사용법
 
 대화형 실행:
@@ -46,6 +51,8 @@ config에 `file_path`가 있으면 workspace를 묻지 않고 해당 경로를 �
 - `0`: 전체 repo 실행
 - `1 3 5`: 선택한 repo만 실행
 - `-2 5`: 2번, 5번 repo를 제외하고 나머지 실행
+
+`Select config`에는 `blackbox (config)`, `my_local_robot (personal_config)`처럼 파일명 뒤에 폴더 위치가 괄호로 표시됩니다.
 
 `ROS_WS` 사용:
 
@@ -179,6 +186,7 @@ repo별로 사용할 수 있는 키는 아래와 같습니다.
 - 이 형식은 `update_repos.sh` 전용 config 형식입니다.
 - 하나의 파일 안에서 `git_base_url:`를 여러 번 쓰는 것을 이 스크립트는 지원합니다.
 - `file_path:`는 top-level에서 읽으며, 해당 config 전체의 target directory로 사용됩니다.
+- 로컬 전용 config는 `personal_config/` 아래에 두면 일반적인 `git add` 대상에서 제외됩니다.
 - 일반적인 YAML parser에서는 중복 top-level key를 다르게 처리할 수 있으므로, 다른 YAML 도구와 공용으로 쓰는 용도에는 적합하지 않을 수 있습니다.
 
 ## 업데이트 동작
@@ -214,6 +222,12 @@ blackbox workspace 업데이트:
 ```bash
 export ROS_WS=/home/aeirobot/ROS2/blackbox_ws
 ./update_repos.sh --config blackbox
+```
+
+로컬 전용 config 사용 예시:
+
+```bash
+./update_repos.sh --config personal_config/my_local_robot.yaml
 ```
 
 gripper workspace 업데이트:

@@ -28,12 +28,15 @@
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PERSONAL_CONFIG_DIR="${SCRIPT_DIR}/personal_config"
 CONFIG_DIR="${SCRIPT_DIR}/config"
+CONFIG_DIRS=("${PERSONAL_CONFIG_DIR}" "${CONFIG_DIR}")
 
 # ---- colors ----
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 DIM='\033[2m'
@@ -92,17 +95,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ---- scan available yaml files ----
-AVAILABLE_YAMLS=()
-while IFS= read -r -d '' f; do
-    AVAILABLE_YAMLS+=("$f")
-done < <(find "$CONFIG_DIR" -maxdepth 1 -name "*.yaml" -print0 | sort -z)
-
-if [ ${#AVAILABLE_YAMLS[@]} -eq 0 ]; then
-    echo -e "${RED}No config files found in ${CONFIG_DIR}${RESET}"
-    exit 1
-fi
-
 # ---- helpers ----
 
 repo_in_list() {
@@ -151,6 +143,75 @@ build_clone_url_from_base() {
     local repo="$2"
     echo "${base%/}/${repo}.git"
 }
+
+get_config_display_name() {
+    local cfg="$1"
+    local name dir_label
+
+    name="$(basename "$cfg" .yaml)"
+    dir_label="$(basename "$(dirname "$cfg")")"
+
+    printf '%s %b(%s)%b' "$name" "$BLUE" "$dir_label" "$RESET"
+}
+
+get_config_reference_name() {
+    local cfg="$1"
+    local name dir_label
+
+    name="$(basename "$cfg" .yaml)"
+    dir_label="$(basename "$(dirname "$cfg")")"
+
+    printf '%s (%s)' "$name" "$dir_label"
+}
+
+resolve_config_path_from_arg() {
+    local name="$1"
+    local candidate=""
+
+    if [[ "$name" == /* ]]; then
+        printf '%s\n' "$name"
+        return 0
+    fi
+
+    if [[ "$name" == */* ]]; then
+        candidate="${SCRIPT_DIR}/${name}"
+        if [[ "$candidate" != *.yaml ]]; then
+            candidate="${candidate}.yaml"
+        fi
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+
+    local basename_with_ext="$name"
+    if [[ "$basename_with_ext" != *.yaml ]]; then
+        basename_with_ext="${basename_with_ext}.yaml"
+    fi
+
+    local dir
+    for dir in "${CONFIG_DIRS[@]}"; do
+        candidate="${dir}/${basename_with_ext}"
+        if [[ -f "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    printf '%s\n' "${CONFIG_DIR}/${basename_with_ext}"
+}
+
+# ---- scan available yaml files ----
+AVAILABLE_YAMLS=()
+for cfg_dir in "${CONFIG_DIRS[@]}"; do
+    [[ -d "$cfg_dir" ]] || continue
+    while IFS= read -r -d '' f; do
+        AVAILABLE_YAMLS+=("$f")
+    done < <(find "$cfg_dir" -maxdepth 1 -name "*.yaml" -print0 | sort -z)
+done
+
+if [ ${#AVAILABLE_YAMLS[@]} -eq 0 ]; then
+    echo -e "${RED}No config files found in ${CONFIG_DIR} or ${PERSONAL_CONFIG_DIR}${RESET}"
+    exit 1
+fi
 
 get_git_base_summary() {
     local cfg="$1"
@@ -400,7 +461,7 @@ pick_configs() {
     local i=1
     for yaml in "${AVAILABLE_YAMLS[@]}"; do
         local name
-        name="$(basename "$yaml" .yaml)"
+        name="$(get_config_display_name "$yaml")"
         printf "  ${BOLD}[%d]${RESET} %s\n" "$i" "$name"
         (( i++ ))
     done
@@ -456,7 +517,7 @@ pick_repos() {
     declare -A _seen_repo
 
     for cfg in "${CONFIG_FILES[@]}"; do
-        local cfgname; cfgname="$(basename "$cfg" .yaml)"
+        local cfgname; cfgname="$(get_config_reference_name "$cfg")"
         while read -r repo branch; do
             if [[ -z "${_seen_repo[$repo]+x}" ]]; then
                 PICK_REPOS+=("$repo")
@@ -596,13 +657,7 @@ pick_repos() {
 CONFIG_FILES=()
 if [ ${#FILTER_CONFIGS[@]} -gt 0 ]; then
     for name in "${FILTER_CONFIGS[@]}"; do
-        if [[ "$name" == /* ]]; then
-            CONFIG_FILES+=("$name")
-        elif [[ "$name" == *.yaml ]]; then
-            CONFIG_FILES+=("${CONFIG_DIR}/${name}")
-        else
-            CONFIG_FILES+=("${CONFIG_DIR}/${name}.yaml")
-        fi
+        CONFIG_FILES+=("$(resolve_config_path_from_arg "$name")")
     done
 elif [ ${#AVAILABLE_YAMLS[@]} -eq 1 ]; then
     CONFIG_FILES=("${AVAILABLE_YAMLS[0]}")

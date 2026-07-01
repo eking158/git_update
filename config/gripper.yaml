@@ -1,7 +1,0 @@
-# Repo branch configuration for gripper
-git_base_url: https://github.com/HERoEHS
-
-branches:
-  aeirobot_toolbox: develop
-  aeirobot_teleoperation: feature/m1_gripper
-  ROS-TCP-Endpoint: feature/m1_poc
