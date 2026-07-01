@@ -14,4 +14,4 @@ branches:
   alice_mpc: develop
   alice_rl_inference: develop
   aeirobot_blackbox: develop
-  aeirobot_debug_tools: develop
+  #aeirobot_debug_tools: develop

@@ -992,7 +992,7 @@ clone_repo() {
     echo -e "  ${YELLOW}Not found locally, cloning...${RESET}"
     echo -e "  Clone URL: ${CYAN}${clone_url}${RESET}"
 
-    local out; out=$(git clone --branch "$target_branch" --single-branch "$clone_url" "$repo_path" 2>&1)
+    local out; out=$(git clone --branch "$target_branch" "$clone_url" "$repo_path" 2>&1)
     local status=$?
     echo "$out" | tail -1
 
