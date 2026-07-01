@@ -10,7 +10,7 @@ branches:
   aeirobot_toolbox: develop
   aeirobot_state_estimator: develop
   aeirobot_framework: feature/rust
-  #aeirobot_hand: feature/ro_hand
+  aeirobot_hand: feature/ro_hand
   alice_rl_inference: develop
   profile_settings: develop
   aeirobot_thirdparty: develop

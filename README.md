@@ -7,6 +7,7 @@
 - 없는 repo를 `<workspace>/src` 아래에 clone
 - `file_path`가 있으면 해당 경로에 바로 clone
 - 이미 있는 repo를 `fetch` + `pull`로 업데이트
+- 특정 repo를 제외하고 나머지만 일괄 clone/pull 가능
 - branch가 다를 때는 `대상 branch로 전환 후 pull` 또는 `현재 branch에서 대상 branch를 바로 pull` 중 선택 가능
 - branch 전환이 로컬 변경 때문에 막히면, skip 전에 현재 branch에서 대상 branch를 한 번 더 pull 시도
 - branch 전환이 `.git/index.lock` 때문에 막히면, stale lock 파일을 삭제한 뒤 branch 전환 재시도
@@ -40,6 +41,12 @@ config에 `file_path`가 있으면 workspace를 묻지 않고 해당 경로를 �
 ./update_repos.sh
 ```
 
+`Select repo(s)` 입력 예시:
+
+- `0`: 전체 repo 실행
+- `1 3 5`: 선택한 repo만 실행
+- `-2 5`: 2번, 5번 repo를 제외하고 나머지 실행
+
 `ROS_WS` 사용:
 
 ```bash
@@ -57,6 +64,12 @@ workspace 경로 직접 지정:
 
 ```bash
 ./update_repos.sh --workspace /home/aeirobot/ROS2/alice_mobile_ws --config alice_mobile_develop --repo alice_mobile_main,alice_mobile_parameters
+```
+
+특정 repo만 제외하고 나머지 업데이트:
+
+```bash
+./update_repos.sh --workspace /home/aeirobot/ROS2/alice_mobile_ws --config alice_mobile_develop --exclude-repo alice_mobile_parameters,alice_mobile_gui
 ```
 
 branch mismatch 처리 방식을 미리 지정:
@@ -175,20 +188,24 @@ repo별로 사용할 수 있는 키는 아래와 같습니다.
 1. 로컬에 repo가 없으면 clone
 2. repo가 이미 있으면 먼저 `git fetch --prune origin`
 3. 현재 branch가 다르면 원격에 대상 branch가 있는지 먼저 확인
-4. branch mismatch가 있으면 사용자가 아래 중 하나를 선택
+4. `--exclude-repo`에 포함된 repo는 clone/pull 없이 바로 skip
+5. branch mismatch가 있으면 사용자가 아래 중 하나를 선택
    - 대상 branch로 전환한 뒤 `git pull origin <target_branch>`
    - 현재 branch를 유지한 채 `git pull origin <target_branch>`
    - skip
-5. `switch`를 골랐는데 branch 전환이 로컬 변경 때문에 막히면, 바로 skip하지 않고 현재 branch에서 `git pull origin <target_branch>`를 한 번 더 시도
-6. `switch`를 골랐는데 branch 전환이 `.git/index.lock` 때문에 막히면, stale lock 파일을 삭제한 뒤 같은 branch 전환을 한 번 더 시도
-7. 비대화형 실행에서는 `--branch-mismatch-mode switch|pull-current|skip`로 미리 지정 가능
-8. `--branch-mismatch-mode pull-current`와 `--develop-sync-mode merge|rebase|skip`를 함께 쓰면, 대상 branch가 `develop`일 때는 현재 branch 위로 최신 `develop`을 `merge` 또는 `rebase` 방식으로 가져올 수 있음
-9. 로컬 변경 사항이 있어도 `checkout` 또는 `pull`이 실제로 가능한 경우 그대로 진행
-10. 아래 상황처럼 Git이 로컬 변경 사항 때문에 진행을 거부할 때만 skip
+6. `switch`를 골랐는데 branch 전환이 로컬 변경 때문에 막히면, 바로 skip하지 않고 현재 branch에서 `git pull origin <target_branch>`를 한 번 더 시도
+7. `switch`를 골랐는데 branch 전환이 `.git/index.lock` 때문에 막히면, stale lock 파일을 삭제한 뒤 같은 branch 전환을 한 번 더 시도
+8. 비대화형 실행에서는 `--branch-mismatch-mode switch|pull-current|skip`로 미리 지정 가능
+9. `--branch-mismatch-mode pull-current`와 `--develop-sync-mode merge|rebase|skip`를 함께 쓰면, 대상 branch가 `develop`일 때는 현재 branch 위로 최신 `develop`을 `merge` 또는 `rebase` 방식으로 가져올 수 있음
+10. 로컬 변경 사항이 있어도 `checkout` 또는 `pull`이 실제로 가능한 경우 그대로 진행
+11. 아래 상황처럼 Git이 로컬 변경 사항 때문에 진행을 거부할 때만 skip
    - branch 전환 시 덮어쓰기 위험이 있는 경우
    - pull/merge 시 덮어쓰기 위험이 있는 경우
 
 repo별 custom clone URL이 설정되어 있으면 fetch 전에 `origin` URL도 같이 맞춰줍니다.
+
+`--repo`와 `--exclude-repo`를 함께 쓰면, 먼저 `--repo`로 대상을 좁힌 뒤 그 안에서 `--exclude-repo`를 제외합니다.
+`--skip-repo`는 `--exclude-repo`의 별칭으로 같이 사용할 수 있습니다.
 
 ## 현재 config 기준 예시
 
@@ -209,6 +226,12 @@ gripper workspace 업데이트:
 
 ```bash
 ./update_repos.sh --workspace /home/aeirobot/ROS2/blackbox_ws --config blackbox --repo aeirobot_debug_tools
+```
+
+특정 repo 제외:
+
+```bash
+./update_repos.sh --workspace /home/aeirobot/ROS2/blackbox_ws --config blackbox --exclude-repo aeirobot_debug_tools
 ```
 
 `file_path` 사용 예시:

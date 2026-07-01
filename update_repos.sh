@@ -9,6 +9,7 @@
 #   ./update_repos.sh --workspace /home/aeirobot/ROS2/blackbox_ws
 #   ROS_WS=/home/aeirobot/ROS2/blackbox_ws ./update_repos.sh --config blackbox
 #   ./update_repos.sh --workspace /home/aeirobot/ROS2/alice4_develop_ws --config alice4_develop --repo alice_main,alice_common
+#   ./update_repos.sh --config blackbox --exclude-repo alice_main,alice_common
 #   ./update_repos.sh --branch-mismatch-mode pull-current --config blackbox
 #   ./update_repos.sh --develop-sync-mode merge --branch-mismatch-mode pull-current --config blackbox
 #
@@ -40,6 +41,8 @@ RESET='\033[0m'
 
 # ---- parse arguments ----
 FILTER_REPOS=()
+FILTER_REPOS_ACTIVE=false
+EXCLUDE_REPOS=()
 FILTER_CONFIGS=()
 WORKSPACE_INPUT=""
 WORKSPACE_ROOT=""
@@ -60,6 +63,11 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --repo)
             IFS=',' read -ra FILTER_REPOS <<< "$2"
+            FILTER_REPOS_ACTIVE=true
+            shift 2
+            ;;
+        --exclude-repo|--skip-repo)
+            IFS=',' read -ra EXCLUDE_REPOS <<< "$2"
             shift 2
             ;;
         --config)
@@ -96,6 +104,37 @@ if [ ${#AVAILABLE_YAMLS[@]} -eq 0 ]; then
 fi
 
 # ---- helpers ----
+
+repo_in_list() {
+    local repo="$1"
+    shift
+
+    local candidate
+    for candidate in "$@"; do
+        [[ "$candidate" == "$repo" ]] && return 0
+    done
+
+    return 1
+}
+
+repo_is_excluded() {
+    local repo="$1"
+    [ ${#EXCLUDE_REPOS[@]} -gt 0 ] && repo_in_list "$repo" "${EXCLUDE_REPOS[@]}"
+}
+
+should_process_repo() {
+    local repo="$1"
+
+    if [ "$FILTER_REPOS_ACTIVE" = true ] && ! repo_in_list "$repo" "${FILTER_REPOS[@]}"; then
+        return 1
+    fi
+
+    if repo_is_excluded "$repo"; then
+        return 1
+    fi
+
+    return 0
+}
 
 expand_path_tokens() {
     local path="$1"
@@ -407,7 +446,7 @@ pick_configs() {
 }
 
 # ---- repo picker ----
-# Reads repos from CONFIG_FILES; sets FILTER_REPOS.
+# Reads repos from CONFIG_FILES; sets FILTER_REPOS and FILTER_REPOS_ACTIVE.
 pick_repos() {
     # Collect all repos from selected configs (ordered, deduplicated)
     # Parallel arrays: PICK_REPOS, PICK_BRANCHES, PICK_CONFIG_NAMES
@@ -467,6 +506,7 @@ pick_repos() {
     echo -e "  ${BOLD}[0]${RESET} All repos"
     echo ""
     echo -e "  Enter number(s) [0-${total}], space or comma separated"
+    echo -e "  Use ${BOLD}-N${RESET} to exclude repo(s) from all ${DIM}(example: -2 5 = all except 2 and 5)${RESET}"
     echo -n "  > "
 
     local input
@@ -474,22 +514,81 @@ pick_repos() {
     input="${input//,/ }"
 
     FILTER_REPOS=()
+    FILTER_REPOS_ACTIVE=false
     local selected_all=false
+    local exclude_mode=false
+    local -a EXCLUDED_PICK_REPOS=()
 
     for token in $input; do
-        if [[ "$token" == "0" ]]; then
-            selected_all=true; break
+        if [[ "$token" =~ ^[-!][0-9]+$ ]]; then
+            exclude_mode=true
+            break
         fi
-        if [[ "$token" =~ ^[0-9]+$ ]] && (( token >= 1 && token <= total )); then
-            FILTER_REPOS+=("${PICK_REPOS[$((token - 1))]}")
+    done
+
+    for token in $input; do
+        local idx=""
+
+        if [[ "$token" == "0" ]]; then
+            if [ "$exclude_mode" = true ]; then
+                echo -e "  ${YELLOW}Ignoring invalid input in exclude mode: '${token}'${RESET}"
+                continue
+            fi
+            selected_all=true
+            break
+        fi
+
+        if [ "$exclude_mode" = true ]; then
+            if [[ "$token" =~ ^[-!][0-9]+$ ]]; then
+                idx="${token#?}"
+            elif [[ "$token" =~ ^[0-9]+$ ]]; then
+                idx="$token"
+            else
+                echo -e "  ${YELLOW}Ignoring invalid input: '${token}'${RESET}"
+                continue
+            fi
+        elif [[ "$token" =~ ^[0-9]+$ ]]; then
+            idx="$token"
+        else
+            echo -e "  ${YELLOW}Ignoring invalid input: '${token}'${RESET}"
+            continue
+        fi
+
+        if (( idx >= 1 && idx <= total )); then
+            if [ "$exclude_mode" = true ]; then
+                EXCLUDED_PICK_REPOS+=("${PICK_REPOS[$((idx - 1))]}")
+            else
+                FILTER_REPOS+=("${PICK_REPOS[$((idx - 1))]}")
+            fi
         else
             echo -e "  ${YELLOW}Ignoring invalid input: '${token}'${RESET}"
         fi
     done
 
+    if [ "$exclude_mode" = true ]; then
+        if [ ${#EXCLUDED_PICK_REPOS[@]} -eq 0 ]; then
+            echo -e "  ${YELLOW}No valid exclusion selection — updating all repos.${RESET}"
+            FILTER_REPOS=()
+            FILTER_REPOS_ACTIVE=false
+            return
+        fi
+
+        local repo
+        for repo in "${PICK_REPOS[@]}"; do
+            if ! repo_in_list "$repo" "${EXCLUDED_PICK_REPOS[@]}"; then
+                FILTER_REPOS+=("$repo")
+            fi
+        done
+        FILTER_REPOS_ACTIVE=true
+        return
+    fi
+
     if [ "$selected_all" = true ] || [ ${#FILTER_REPOS[@]} -eq 0 ]; then
-        FILTER_REPOS=()   # empty = all
+        FILTER_REPOS=()
+        FILTER_REPOS_ACTIVE=false
         [ "$selected_all" = false ] && echo -e "  ${YELLOW}No valid selection — updating all repos.${RESET}"
+    else
+        FILTER_REPOS_ACTIVE=true
     fi
 }
 
@@ -527,8 +626,8 @@ if [ "$CONFIGS_NEED_WORKSPACE" = true ]; then
 fi
 
 # ---- resolve FILTER_REPOS ----
-# Only show repo picker in interactive mode when --repo was not given
-if [ ${#FILTER_REPOS[@]} -eq 0 ] && [ -t 0 ]; then
+# Only show repo picker in interactive mode when no include/exclude filters were given
+if [ "$FILTER_REPOS_ACTIVE" = false ] && [ ${#EXCLUDE_REPOS[@]} -eq 0 ] && [ -t 0 ]; then
     pick_repos
 fi
 
@@ -994,13 +1093,19 @@ clone_repo() {
 
     local out; out=$(git clone --branch "$target_branch" "$clone_url" "$repo_path" 2>&1)
     local status=$?
-    echo "$out" | tail -1
 
     if [ $status -ne 0 ]; then
         echo -e "  ${RED}ERROR: clone failed.${RESET}"
+        if [[ -n "$out" ]]; then
+            echo -e "  ${RED}Reason:${RESET}"
+            while IFS= read -r line; do
+                echo "    $line"
+            done <<< "$out"
+        fi
         ALL_FAILED+=("${repo}"); return 1
     fi
 
+    echo "$out" | tail -1
     echo -e "  ${GREEN}Cloned → '${target_branch}'${RESET}"
     run_submodule_update "$repo" "$repo_path"
     ALL_CLONED+=("${repo}"); ALL_SUCCESS+=("${repo}")
@@ -1146,10 +1251,14 @@ for cfg in "${CONFIG_FILES[@]}"; do
     print_workspace_header "$cfg" "$SRC_DIR" "$GIT_BASE_URL_CFG"
 
     for repo in "${!REPO_BRANCH[@]}"; do
-        if [ ${#FILTER_REPOS[@]} -gt 0 ]; then
-            match=false
-            for f in "${FILTER_REPOS[@]}"; do [ "$f" = "$repo" ] && match=true && break; done
-            [ "$match" = false ] && continue
+        if ! should_process_repo "$repo"; then
+            if repo_is_excluded "$repo"; then
+                echo -e "${BOLD}[ ${repo} ]${RESET} → ${CYAN}${REPO_BRANCH[$repo]}${RESET}"
+                echo -e "  ${YELLOW}SKIP: excluded by --exclude-repo.${RESET}"
+                ALL_SKIPPED+=("${repo}")
+                echo ""
+            fi
+            continue
         fi
         update_repo "$repo" "${REPO_BRANCH[$repo]}"
         echo ""
