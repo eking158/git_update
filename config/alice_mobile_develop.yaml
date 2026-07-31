@@ -2,11 +2,11 @@
 git_base_url: https://github.com/HERoEHS
 
 branches:
-  aeirobot_framework: develop
-  aeirobot_toolbox: feature/m1_poc_hand_rad
+  aeirobot_framework: v1.0.2
+  aeirobot_toolbox: feature/m1_poc_pc
   alice_mobile_common: develop
   alice_mobile_main: develop
   alice_mobile_parameters: v0.1.0-hotfix
-  alice_mobile_jetson: feature/nextrise
-  aeirobot_teleoperation: feature/web_ui
+  alice_mobile_jetson: feature/nextrise_2026
+  aeirobot_teleoperation: develop
   ROS-TCP-Endpoint: feature/m1_poc

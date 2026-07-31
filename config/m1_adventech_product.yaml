@@ -1,0 +1,10 @@
+# Repo branch configuration for alice_mobile_develop
+git_base_url: https://github.com/HERoEHS
+
+branches:
+  alice_mobile_main: v0.1.0
+  alice_mobile_common: develop
+  alice_mobile_parameters: v0.1.0-hotfix
+  aeirobot_hand: feature/m1_poc_hand_rad
+  aeirobot_toolbox: feature/m1_poc_hand_rad
+  aeirobot_framework: v1.0.2
